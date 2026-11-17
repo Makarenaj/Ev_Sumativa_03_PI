@@ -100,3 +100,4 @@ def validar_factores(factores):
         raise ErrorValidacion(
             f"La suma de los factores {RANGO_SUMA[0]} a {RANGO_SUMA[1]} es {suma} y supera 1")
     return suma
+
