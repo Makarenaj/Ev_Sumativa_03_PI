@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Carga Masiva CSV - Calificaciones</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h2>Cargar Calificaciones via CSV</h2>
+        
+        <!-- Mensajes de error o éxito -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul>
+              {% for category, message in messages %}
+                <li class="{{ category }}"><strong>{{ category.capitalize() }}:</strong> {{ message }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        <form action="/cargar_csv" method="POST" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label for="archivo_csv">Selecciona tu archivo CSV:</label>
+            <input type="file" name="archivo_csv" accept=".csv" required>
+            <button type="submit" class="btn-principal">Previsualizar y Cargar</button>
+        </form>
+        <br>
+        <a href="/mantenedor">Volver al mantenedor</a>
+    </div>
+</body>
+</html>
