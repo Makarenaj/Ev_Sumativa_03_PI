@@ -15,9 +15,12 @@ Hay que declararlas en el informe (sección 1) y en el README, y el grupo las co
 | Corredor vs Bolsa | La Bolsa es una corredora (es_bolsa) y sus datos no se modifican ni eliminan | Lo garantizan los triggers de la base. |
 | Log | Solo inserción | Trazabilidad: quién, qué, cuándo y origen. |
 | Índices | La llave única y (corredora, instrumento); el log por fecha y usuario | Para la búsqueda por instrumento. |
-
 ## Cómo usarlo
 1. `psql -U postgres -c "CREATE DATABASE calificaciones"` y luego `psql -U postgres -d calificaciones -f schema.sql`
 2. Opcional, datos de ejemplo: `psql -U postgres -d calificaciones -f seed_ejemplo_hdu.sql`
-3. Tests: `pip install pytest` y `python -m pytest -v` (15 casos).
+3. Tests: `python -m pip install -r requirements.txt` y `python -m pytest -v`.
 4. En la aplicación, guardar calificación, montos, factores y log en UNA transacción (la suma se revisa al confirmar).
+
+
+
+Cómo instalar, ejecutar y probar: ver `README.md`.
