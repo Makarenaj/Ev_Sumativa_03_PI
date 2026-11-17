@@ -21,6 +21,9 @@ CREATE TABLE usuario (
     clave_hash   TEXT NOT NULL,
     rol          VARCHAR(15) NOT NULL CHECK (rol IN ('corredor', 'analista', 'administrador')),
     activo       BOOLEAN NOT NULL DEFAULT TRUE,
+    -- bloqueo de la cuenta tras varios intentos fallidos de inicio de sesión (tarea 4)
+    intentos_fallidos SMALLINT NOT NULL DEFAULT 0 CHECK (intentos_fallidos >= 0),
+    bloqueado_hasta   TIMESTAMPTZ,
     CONSTRAINT ck_corredor_con_corredora CHECK (rol <> 'corredor' OR id_corredora IS NOT NULL)
 );
 
