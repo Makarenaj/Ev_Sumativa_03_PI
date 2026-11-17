@@ -1,0 +1,43 @@
+.form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.field-span-2 { grid-column: span 2; }
+
+/* Suma visible de montos y de factores */
+.summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 10px; }
+.summary-card { display: grid; gap: 4px; padding: 12px 14px; border: 2px solid var(--color-texto); background: var(--color-alterno); }
+.summary-card span { font-size: 14px; font-weight: 700; }
+.summary-card strong { font-size: 26px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.summary-card em { font-size: 14px; }
+.summary-error { border-color: var(--color-acento); background: var(--color-fondo); color: var(--color-acento); }
+.calculation-message { min-height: 22px; margin: 0 0 12px; font-size: 14px; font-style: italic; }
+
+/* Tabla de montos y factores (columnas 8 a 37) */
+.detail-table th, .detail-table td { padding: 5px 10px; }
+.detail-table th:first-child { width: 90px; }
+.detail-table input {
+  width: 100%; min-height: 38px; padding: 6px 8px;
+  border: 1px solid var(--color-texto); border-radius: 0;
+  background: var(--color-fondo); color: var(--color-texto);
+}
+.form-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin: 4px 0 24px; }
+
+/* Detalle de solo lectura */
+.datos { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; margin: 0; }
+.datos dt { font-size: 14px; font-weight: 700; }
+.datos dd { margin: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .form-grid, .datos { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 520px) {
+  .form-grid, .summary-grid, .datos { grid-template-columns: minmax(0, 1fr); }
+  .field-span-2 { grid-column: auto; }
+  .summary-card strong { font-size: 22px; }
+  /* En celular se oculta la columna Tipo para que monto y factor se lean completos */
+  .detail-table table { table-layout: fixed; }
+  .detail-table th:first-child { width: 40px; }
+  .detail-table th, .detail-table td { padding: 4px 4px; font-size: 14px; }
+  .detail-table input { padding: 6px 4px; font-size: 14px; }
+  .col-tipo { display: none; }
+  .form-actions .button { flex: 1; }
+}

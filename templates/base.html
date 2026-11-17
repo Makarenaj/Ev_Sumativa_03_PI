@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a1a1a">
+  <title>{% block title %}Mantenedor de Calificaciones{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  {% block page_styles %}{% endblock %}
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <a class="brand" href="{{ url_for('calificaciones') if usuario_actual else url_for('login') }}">Mantenedor de Calificaciones</a>
+      {# Ruta de la guía de estilo: perfil > sección #}
+      <p class="ruta" aria-label="Ubicación">
+        {% if usuario_actual %}<span class="ruta-perfil">{{ usuario_actual.rol|capitalize }}</span> &gt; {% endif %}{% block ruta %}Inicio de sesión{% endblock %}
+      </p>
+    </div>
+    {% if usuario_actual %}
+      <form class="topbar-user" action="{{ url_for('logout') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-inverse button-small" type="submit">Cerrar sesión</button>
+      </form>
+    {% endif %}
+  </header>
+
+  <main class="page">
+    {% with mensajes = get_flashed_messages(with_categories=true) %}
+      {% if mensajes %}
+        <section class="alerts" aria-live="polite">
+          {% for categoria, mensaje in mensajes %}
+            <p class="alert alert-{{ categoria }}"><strong>{{ {"error": "Error:", "ok": "Listo:", "aviso": "Aviso:"}.get(categoria, "") }}</strong> {{ mensaje }}</p>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">Acceso restringido a usuarios autorizados.</footer>
+</body>
+</html>
