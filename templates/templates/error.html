@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ titulo }} | Mantenedor{% endblock %}
+{% block ruta %}Aviso{% endblock %}
+{% block page_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='error.css') }}">
+{% endblock %}
+{% block content %}
+<section class="panel error-panel">
+  <h1>{{ titulo }}</h1>
+  <p class="text-danger"><strong>Error:</strong> {{ mensaje }}</p>
+  <a class="button button-secondary" href="{{ url_for('calificaciones') }}">Volver</a>
+</section>
+{% endblock %}

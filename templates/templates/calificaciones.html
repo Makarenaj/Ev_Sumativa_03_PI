@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Calificaciones | Mantenedor{% endblock %}
+{% block ruta %}Calificaciones{% endblock %}
+{% block page_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='calificaciones.css') }}">
+{% endblock %}
+{% block content %}
+{% set es_corredor = usuario_actual.rol == "corredor" %}
+{% set puede_modificar = usuario_actual.rol in ("corredor", "administrador") %}
+<section class="page-heading">
+  <div>
+    <h1>Calificaciones</h1>
+    <p class="muted">
+      {% if es_corredor %}Busca, ingresa y administra las calificaciones de tu corredora. Los datos oficiales de Bolsa son de solo lectura.
+      {% elif puede_modificar %}Consulta, ingresa, modifica y elimina las calificaciones de todas las corredoras. Los datos oficiales de Bolsa son de solo lectura.
+      {% else %}Consulta de las calificaciones de todas las corredoras. Tu perfil es de solo lectura.{% endif %}
+    </p>
+  </div>
+  {% if puede_modificar %}
+  <a class="button button-primary" href="{{ url_for('nueva_calificacion') }}">+ Ingresar calificación</a>
+  {% endif %}
+  {% if es_corredor %}
+  <a class="button button-secondary" href="{{ url_for('cargar_csv') }}">Carga masiva (CSV)</a>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <form class="search-form" action="{{ url_for('calificaciones') }}" method="get">
+    <div class="field search-field">
+      <label for="q">Instrumento</label>
+      <input id="q" name="q" type="search" maxlength="50" value="{{ filtros.q }}"
+             placeholder="Buscar por nombre">
+    </div>
+    <div class="field">
+      <label for="ejercicio">Ejercicio</label>
+      <input id="ejercicio" name="ejercicio" type="number" min="1900" max="2100"
+             value="{{ filtros.ejercicio }}" placeholder="Ej. 2025">
+    </div>
+    {% if not es_corredor %}
+    <div class="field">
+      <label for="id_corredora">Corredora</label>
+      <select id="id_corredora" name="id_corredora">
+        <option value="">Todas</option>
+        {% for corredora in corredoras %}
+        <option value="{{ corredora.id_corredora }}"
+          {% if filtros.id_corredora|string == corredora.id_corredora|string %}selected{% endif %}>
+          {{ corredora.nombre }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <button class="button button-secondary" type="submit">Buscar</button>
+    <a class="button button-quiet" href="{{ url_for('calificaciones') }}">Limpiar</a>
+  </form>
+</section>
+
+<section class="panel table-panel">
+  <div class="table-heading">
+    <h2>Resultados</h2>
+    <span class="result-count">{{ registros|length }} resultado(s), máximo 200</span>
+  </div>
+  {% if registros %}
+  <div class="table-scroll">
+    <table class="tabla-tarjetas">
+      <thead>
+        <tr>
+          <th>Instrumento</th>
+          <th>Ejercicio / mercado</th>
+          <th>Corredora</th>
+          <th>Fuente</th>
+          <th>Última modificación</th>
+          <th class="numeric">Suma montos {{ suma_desde }}–{{ suma_hasta }}</th>
+          <th class="numeric">Suma factores {{ suma_desde }}–{{ suma_hasta }}</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for registro in registros %}
+        <tr>
+          <td data-label="Instrumento">
+            <strong>{{ registro.instrumento }}</strong>
+            <span class="subline">{{ registro.fecha.strftime("%d-%m-%Y") }} · Sec. {{ registro.secuencia }}</span>
+          </td>
+          <td data-label="Ejercicio / mercado">{{ registro.ejercicio }} / {{ registro.mercado }}</td>
+          <td data-label="Corredora">
+            <span class="celda">
+              <span>{{ registro.corredora }}
+              {% if registro.es_bolsa %}<span class="badge badge-official">Oficial</span>{% endif %}</span>
+              {% if registro.predomina %}<span class="badge" title="Existe la misma calificación en Bolsa: se usa la del corredor">Predomina sobre Bolsa</span>{% endif %}
+            </span>
+          </td>
+          <td data-label="Fuente">{{ origenes.get(registro.origen, registro.origen) }}</td>
+          <td data-label="Última modificación">
+            <span class="celda">
+              <span>{{ registro.fecha_cambio|fecha_hora }}</span>
+              <span class="subline">{{ "Modificada" if registro.modificada else "Creada" }}</span>
+            </span>
+          </td>
+          <td class="numeric" data-label="Suma montos {{ suma_desde }}–{{ suma_hasta }}">{{ registro.suma_montos|monto }}</td>
+          <td class="numeric" data-label="Suma factores {{ suma_desde }}–{{ suma_hasta }}"><strong>{{ registro.suma_factores|factor }}</strong></td>
+          <td data-label="Acciones">
+            <div class="row-actions">
+              <a class="button button-quiet button-small"
+                 href="{{ url_for('ver_calificacion', id_calificacion=registro.id) }}">Ver</a>
+              {% if registro.editable %}
+                <a class="button button-quiet button-small"
+                   href="{{ url_for('editar_calificacion', id_calificacion=registro.id) }}">Modificar</a>
+                <a class="button button-danger button-small"
+                   href="{{ url_for('eliminar_calificacion', id_calificacion=registro.id) }}">Eliminar</a>
+              {% else %}
+                <span class="field-help">Solo lectura</span>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty-state">
+      <h3>No hay resultados</h3>
+      <p class="muted">Prueba otros filtros{% if puede_modificar %} o ingresa una calificación nueva{% endif %}.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
