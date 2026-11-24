@@ -2,9 +2,13 @@
 
 Flujo ideal: login -> mantenedor (buscar) -> ingresar calificacion -> montos ->
 Calcular -> factores editables -> Grabar -> la grilla muestra la fila con su fuente.
-Reglas de permisos: solo el corredor crea, modifica y elimina, y solo lo de su
-corredora; analista y administrador consultan todo; lo oficial de Bolsa no se toca.
+Reglas de permisos: el corredor crea, modifica, elimina y carga CSV solo en su
+corredora; el administrador crea, modifica y elimina en cualquier corredora; el
+analista solo consulta; analista y administrador consultan el log; lo oficial de
+Bolsa no lo modifica nadie.
 """
+import csv
+import io
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import wraps
@@ -32,6 +36,7 @@ import psycopg
 from psycopg.errors import UniqueViolation
 
 import calculo
+import carga_csv
 from seguridad import (
     AccesoDenegado,
     CuentaBloqueada,
@@ -113,7 +118,7 @@ def create_app(test_config=None):
         PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
         # la sesion se cierra sola tras este tiempo sin actividad
         MINUTOS_INACTIVIDAD=int(os.environ.get("MINUTOS_INACTIVIDAD", "15")),
-        MAX_CONTENT_LENGTH=1024 * 1024,
+        MAX_CONTENT_LENGTH=4 * 1024 * 1024,
     )
     app.config.update(config)
     app.jinja_env.filters["monto"] = formato_monto
@@ -144,7 +149,6 @@ def create_app(test_config=None):
 
     @app.after_request
     def cabeceras_de_seguridad(respuesta):
-        # Sin scripts ni estilos en linea: todo sale de /static.
         respuesta.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'",
@@ -182,7 +186,6 @@ def create_app(test_config=None):
             flash("Tu sesión se cerró por inactividad. Vuelve a ingresar.", "aviso")
             g.usuario = None
             return None
-        # El rol y la corredora se leen de la base en cada solicitud, no de la cookie.
         with connect() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -214,23 +217,25 @@ def create_app(test_config=None):
 
         return protegida
 
-    def solo_corredor(view):
-        """Crear, modificar y eliminar es exclusivo del perfil corredor (se revisa en el servidor)."""
-        @wraps(view)
-        def protegida(*args, **kwargs):
-            if g.usuario.rol != "corredor":
-                app.logger.warning(
-                    "Acceso denegado: usuario %s (%s) intento %s %s",
-                    g.usuario.id_usuario, g.usuario.rol, request.method, request.path,
-                )
-                abort(403)
-            return view(*args, **kwargs)
+    def requiere_perfil(*perfiles):
+        """Deja pasar solo a los perfiles indicados. Se revisa siempre en el servidor."""
+        def decorador(view):
+            @wraps(view)
+            def protegida(*args, **kwargs):
+                if g.usuario.rol not in perfiles:
+                    app.logger.warning(
+                        "Acceso denegado: usuario %s (%s) intento %s %s",
+                        g.usuario.id_usuario, g.usuario.rol, request.method, request.path,
+                    )
+                    abort(403)
+                return view(*args, **kwargs)
 
-        return protegida
+            return protegida
 
-    # ------------------------------------------------------------------
-    # Lectura y validacion de entradas (siempre en el servidor)
-    # ------------------------------------------------------------------
+        return decorador
+
+    solo_corredor = requiere_perfil("corredor")                    # carga masiva CSV
+    puede_modificar = requiere_perfil("corredor", "administrador")  # ingresar, modificar y eliminar
     def listar_corredoras(conn, usuario):
         consulta = "SELECT id_corredora, nombre, es_bolsa FROM corredora"
         parametros = ()
@@ -277,7 +282,6 @@ def create_app(test_config=None):
         return numero
 
     def leer_campos(form):
-        """Datos basicos de la calificacion. La corredora nunca viene del formulario."""
         ejercicio = parse_entero(form.get("ejercicio"), "Ejercicio", 1900, 2100)
         mercado = (form.get("mercado") or "").strip().upper()
         if not re.fullmatch(r"[A-Z0-9]{1,3}", mercado):
@@ -318,7 +322,6 @@ def create_app(test_config=None):
         }
 
     def leer_montos(origen):
-        """Montos 8 a 37 desde el formulario (monto_N) o desde el JSON de la API (N)."""
         montos = {}
         for columna in COLUMNAS:
             crudo = origen.get(f"monto_{columna}", origen.get(str(columna), "0"))
@@ -328,7 +331,6 @@ def create_app(test_config=None):
         return montos
 
     def leer_factores(form):
-        """Factores tal como quedaron en pantalla (acepta coma o punto). Vacio = sin factor."""
         factores = {}
         for columna in COLUMNAS:
             texto = (form.get(f"factor_{columna}") or "").strip().replace(",", ".")
@@ -343,11 +345,6 @@ def create_app(test_config=None):
         return factores
 
     def firmar_montos(montos):
-        """Firma de los montos con que se calcularon los factores.
-
-        Al Grabar se compara con los montos enviados: si cambiaron despues de
-        Calcular, los factores quedaron desactualizados y se pide recalcular.
-        """
         texto = ";".join(
             f"{columna}={montos[columna].quantize(Decimal('0.01'))}" for columna in COLUMNAS
         )
@@ -356,7 +353,6 @@ def create_app(test_config=None):
         ).hexdigest()
 
     def resumen_sumas(montos_txt, factores_txt):
-        """Sumas que se muestran en pantalla; tolera texto invalido sin fallar."""
         try:
             suma_montos = formato_monto(sum(
                 (Decimal(montos_txt[c] or "0") for c in range(SUMA_DESDE, SUMA_HASTA + 1)),
@@ -380,13 +376,9 @@ def create_app(test_config=None):
         return {"suma_montos": suma_montos, "suma_factores": suma_factores, "estado": estado}
 
     # ------------------------------------------------------------------
-    # Acceso a datos (consultas parametrizadas, filtradas por corredora)
+    # Acceso a datos
     # ------------------------------------------------------------------
     def consultar_registro(conn, id_calificacion, usuario, bloquear=False, para_editar=False):
-        """Trae una calificacion dentro del alcance del usuario o responde 404.
-
-        El corredor lee lo suyo y lo oficial de Bolsa; para editar, solo lo suyo.
-        """
         consulta = """
             SELECT c.id_calificacion, c.id_corredora, c.ejercicio, c.mercado,
                    c.instrumento, c.fecha, c.secuencia, c.numero_dividendo,
@@ -485,30 +477,35 @@ def create_app(test_config=None):
             "factores": {str(k): str(v) for k, v in factores.items()},
         }
 
-    def insertar_log(conn, usuario, accion, id_registro, antes=None, despues=None):
+    def insertar_log(conn, usuario, accion, id_registro, antes=None, despues=None,
+                     tabla="calificacion", origen="manual"):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO log_operacion
                     (id_usuario, accion, tabla_afectada, id_registro,
                      datos_antes, datos_despues, origen)
-                VALUES (%s, %s, 'calificacion', %s, %s::jsonb, %s::jsonb, 'manual')
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
                 """,
                 (
                     usuario.id_usuario,
                     accion,
+                    tabla,
                     id_registro,
                     json.dumps(antes) if antes is not None else None,
                     json.dumps(despues) if despues is not None else None,
+                    origen,
                 ),
             )
 
     def puede_editar(usuario, registro):
-        return (
-            usuario.rol == "corredor"
-            and registro["id_corredora"] == usuario.id_corredora
-            and not registro["es_bolsa"]
-        )
+        """El corredor edita lo de su corredora; el administrador lo de cualquiera.
+        Lo oficial de Bolsa no lo edita nadie."""
+        if registro["es_bolsa"]:
+            return False
+        if usuario.rol == "administrador":
+            return True
+        return usuario.rol == "corredor" and registro["id_corredora"] == usuario.id_corredora
 
     # ------------------------------------------------------------------
     # Inicio y cierre de sesion
@@ -536,7 +533,7 @@ def create_app(test_config=None):
             app.logger.warning("Inicio de sesion fallido para %r", correo[:150])
             flash("Correo o contraseña incorrectos.", "error")
             return render_template("login.html"), 401
-        session.clear()     # sesion nueva: se renueva tambien el token CSRF
+        session.clear()
         session["id_usuario"] = usuario.id_usuario
         session["ultima_actividad"] = time.time()
         session.permanent = True
@@ -550,7 +547,7 @@ def create_app(test_config=None):
         return redirect(url_for("login"))
 
     # ------------------------------------------------------------------
-    # Calculo (boton Calcular): no guarda nada en la base
+    # Calculo
     # ------------------------------------------------------------------
     @app.post("/api/calculo")
     @requiere_login
@@ -606,8 +603,6 @@ def create_app(test_config=None):
         condiciones = []
         parametros = []
         if usuario.rol == "corredor":
-            # Lo suyo, mas lo oficial de Bolsa (solo lectura). Si el corredor ingreso
-            # la misma calificacion, la suya predomina y la oficial no se lista.
             condiciones.append(
                 """(c.id_corredora = %s OR (co.es_bolsa AND NOT EXISTS (
                         SELECT 1 FROM calificacion propia
@@ -621,7 +616,6 @@ def create_app(test_config=None):
             condiciones.append("c.id_corredora = %s")
             parametros.append(id_corredora)
         if busqueda:
-            # el texto va como parametro; se escapan los comodines de LIKE
             patron = busqueda.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             condiciones.append("c.instrumento ILIKE %s")
             parametros.append(f"%{patron}%")
@@ -680,9 +674,11 @@ def create_app(test_config=None):
                 "fecha_cambio": fila[11],
                 "modificada": fila[12],
                 "editable": (
-                    usuario.rol == "corredor"
-                    and fila[13] == usuario.id_corredora
-                    and not fila[2]
+                    not fila[2]
+                    and (
+                        usuario.rol == "administrador"
+                        or (usuario.rol == "corredor" and fila[13] == usuario.id_corredora)
+                    )
                 ),
                 "predomina": fila[14],
             }
@@ -702,7 +698,6 @@ def create_app(test_config=None):
     @app.get("/calificaciones/<int:id_calificacion>")
     @requiere_login
     def ver_calificacion(id_calificacion):
-        """Detalle de solo lectura: datos, montos, factores y suma."""
         usuario = g.usuario
         with connect() as conn:
             registro = consultar_registro(conn, id_calificacion, usuario)
@@ -726,11 +721,228 @@ def create_app(test_config=None):
         )
 
     # ------------------------------------------------------------------
-    # Ingreso y modificacion: Calcular, Grabar y Cancelar
+    # Carga masiva por CSV: previsualizacion, validacion fila por fila y carga
+    # en una sola transaccion. Si una fila es invalida se rechaza TODO el archivo.
+    # ------------------------------------------------------------------
+    def registrar_rechazo(usuario, nombre_archivo, resultado):
+        with connect() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO carga_archivo
+                    (id_usuario, nombre_archivo, tipo, estado, total_filas,
+                     filas_invalidas, detalle_error)
+                VALUES (%s, %s, 'factores', 'rechazado', %s, %s, %s)
+                """,
+                (
+                    usuario.id_usuario, nombre_archivo[:200], resultado.total,
+                    resultado.filas_invalidas, resultado.resumen_error()[:1000],
+                ),
+            )
+
+    def llaves_existentes(conn, id_corredora):
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT ejercicio, mercado, instrumento, secuencia "
+                "FROM calificacion WHERE id_corredora = %s",
+                (id_corredora,),
+            )
+            return {tuple(fila) for fila in cursor.fetchall()}
+
+    def aplicar_carga(conn, usuario, nombre_archivo, resultado):
+        """Guarda el archivo ya validado: agrega lo nuevo y actualiza lo que ya existe."""
+        agregadas = actualizadas = 0
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO carga_archivo
+                    (id_usuario, nombre_archivo, tipo, estado, total_filas, filas_invalidas)
+                VALUES (%s, %s, 'factores', 'confirmado', %s, 0)
+                RETURNING id_carga
+                """,
+                (usuario.id_usuario, nombre_archivo[:200], resultado.total),
+            )
+            id_carga = cursor.fetchone()[0]
+            for fila in resultado.filas:
+                c = fila["campos"]
+                cursor.execute(
+                    """
+                    SELECT id_calificacion FROM calificacion
+                    WHERE id_corredora = %s AND ejercicio = %s AND mercado = %s
+                      AND instrumento = %s AND secuencia = %s
+                    FOR UPDATE
+                    """,
+                    (usuario.id_corredora, c["ejercicio"], c["mercado"], c["instrumento"], c["secuencia"]),
+                )
+                existente = cursor.fetchone()
+                if existente:
+                    id_calificacion = existente[0]
+                    cursor.execute(
+                        """
+                        UPDATE calificacion
+                        SET fecha = %s, numero_dividendo = %s, tipo_sociedad = %s,
+                            valor_historico = %s, origen = 'carga_masiva', id_carga = %s,
+                            modificado_en = now()
+                        WHERE id_calificacion = %s
+                        """,
+                        (c["fecha"], c["numero_dividendo"], c["tipo_sociedad"],
+                         c["valor_historico"], id_carga, id_calificacion),
+                    )
+                    actualizadas += 1
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO calificacion
+                            (id_corredora, ejercicio, mercado, instrumento, fecha, secuencia,
+                             numero_dividendo, tipo_sociedad, valor_historico, origen,
+                             id_carga, creado_por)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'carga_masiva', %s, %s)
+                        RETURNING id_calificacion
+                        """,
+                        (usuario.id_corredora, c["ejercicio"], c["mercado"], c["instrumento"],
+                         c["fecha"], c["secuencia"], c["numero_dividendo"], c["tipo_sociedad"],
+                         c["valor_historico"], id_carga, usuario.id_usuario),
+                    )
+                    id_calificacion = cursor.fetchone()[0]
+                    agregadas += 1
+                # el archivo trae factores, asi que los montos anteriores ya no corresponden
+                guardar_detalles(conn, id_calificacion, {}, fila["factores"], reemplazar=True)
+        insertar_log(
+            conn, usuario, "carga_masiva", id_carga,
+            despues={
+                "archivo": nombre_archivo[:200], "filas": resultado.total,
+                "agregadas": agregadas, "actualizadas": actualizadas,
+            },
+            tabla="carga_archivo", origen="carga_masiva",
+        )
+        return agregadas, actualizadas
+
+    @app.get("/calificaciones/cargar-csv/ejemplo")
+    @requiere_login
+    @solo_corredor
+    def ejemplo_csv():
+        return app.response_class(
+            carga_csv.ejemplo_csv(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=ejemplo_carga.csv"},
+        )
+
+    @app.route("/calificaciones/cargar-csv", methods=("GET", "POST"))
+    @requiere_login
+    @solo_corredor
+    def cargar_csv():
+        usuario = g.usuario
+        if request.method == "GET":
+            return render_template("cargar_csv.html", vista=None)
+        accion = request.form.get("accion", "previsualizar")
+        if accion not in ("previsualizar", "confirmar"):
+            abort(400)
+        if accion == "previsualizar":
+            archivo = request.files.get("archivo_csv")
+            if archivo is None or not archivo.filename.lower().endswith(".csv"):
+                flash("Sube un archivo con extensión .csv.", "error")
+                return render_template("cargar_csv.html", vista=None), 400
+            nombre = os.path.basename(archivo.filename)
+            try:
+                texto = archivo.stream.read().decode("utf-8-sig")
+            except UnicodeDecodeError:
+                flash("El archivo no está en UTF-8. Guárdalo como «CSV UTF-8» y vuelve a subirlo.", "error")
+                return render_template("cargar_csv.html", vista=None), 400
+        else:
+            texto = request.form.get("contenido_csv", "")
+            nombre = os.path.basename(request.form.get("nombre_archivo", "archivo.csv"))
+        resultado = carga_csv.leer_csv(texto)
+        if not resultado.valido:
+            registrar_rechazo(usuario, nombre, resultado)
+            flash("El archivo se rechazó completo: no se guardó ninguna fila. "
+                  "Corrígelo y vuelve a subirlo.", "error")
+            return render_template(
+                "cargar_csv.html",
+                vista={"nombre": nombre, "resultado": resultado, "filas": [], "errores": resultado.errores[:50]},
+            ), 400
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT es_bolsa FROM corredora WHERE id_corredora = %s",
+                    (usuario.id_corredora,),
+                )
+                corredora = cursor.fetchone()
+            if corredora is None or corredora[0]:
+                abort(403, description="Tu corredora no está autorizada para la carga masiva.")
+            if accion == "previsualizar":
+                existentes = llaves_existentes(conn, usuario.id_corredora)
+                filas = []
+                for fila in resultado.filas:
+                    c = fila["campos"]
+                    llave = (c["ejercicio"], c["mercado"], c["instrumento"], c["secuencia"])
+                    filas.append({
+                        **c, "linea": fila["linea"],
+                        "accion": "Actualiza" if llave in existentes else "Agrega",
+                        "suma": sum(
+                            (fila["factores"].get(n, Decimal("0")) for n in range(SUMA_DESDE, SUMA_HASTA + 1)),
+                            Decimal("0"),
+                        ),
+                    })
+                return render_template(
+                    "cargar_csv.html",
+                    vista={
+                        "nombre": nombre, "resultado": resultado, "filas": filas[:200],
+                        "mas_filas": max(len(filas) - 200, 0), "errores": [],
+                        "agregan": sum(1 for f in filas if f["accion"] == "Agrega"),
+                        "actualizan": sum(1 for f in filas if f["accion"] == "Actualiza"),
+                    },
+                    contenido=texto,
+                )
+            agregadas, actualizadas = aplicar_carga(conn, usuario, nombre, resultado)
+        flash(f"Carga masiva completada: {agregadas} calificaciones agregadas y "
+              f"{actualizadas} actualizadas.", "ok")
+        return redirect(url_for("calificaciones"))
+
+    # ------------------------------------------------------------------
+    # NUEVA FUNCIONALIDAD PUNTO 6/7: Consulta del log de solo lectura
+    # ------------------------------------------------------------------
+    @app.get("/log")
+    @requiere_login
+    def ver_log():
+        usuario = g.usuario
+        # Solo analistas y administradores tienen acceso de consulta al log
+        if usuario.rol not in ("analista", "administrador"):
+            abort(403, description="No tienes permiso para consultar el log de operaciones.")
+
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT l.id_log, u.correo, l.accion, l.tabla_afectada, 
+                           l.id_registro, l.fecha_hora, l.origen, l.datos_antes, l.datos_despues
+                    FROM log_operacion l
+                    LEFT JOIN usuario u ON u.id_usuario = l.id_usuario
+                    ORDER BY l.fecha_hora DESC
+                    LIMIT 200
+                    """
+                )
+                filas = cursor.fetchall()
+
+        logs = [
+            {
+                "id_log": fila[0],
+                "correo": fila[1],
+                "accion": fila[2],
+                "tabla": fila[3],
+                "id_registro": fila[4],
+                "fecha_hora": fila[5],
+                "origen": fila[6],
+                "datos_antes": fila[7],
+                "datos_despues": fila[8],
+            }
+            for fila in filas
+        ]
+        return render_template("log.html", logs=logs)
+
+    # ------------------------------------------------------------------
+    # Ingreso y modificacion
     # ------------------------------------------------------------------
     def render_formulario(titulo, usuario, id_calificacion=None, campos=None, montos=None,
                           factores=None, firma="", mensaje="", codigo_estado=200):
-        """Arma la pantalla con lo que venga del formulario o de la base."""
         form = request.form
         with connect() as conn:
             corredoras = listar_corredoras(conn, usuario)
@@ -756,13 +968,28 @@ def create_app(test_config=None):
                 )
             else:
                 factores_vista[columna] = (form.get(f"factor_{columna}") or "").strip()
+        elegir_corredora = usuario.rol == "administrador" and id_calificacion is None
+        nombre_registro = ""
+        if usuario.rol == "administrador" and id_calificacion is not None:
+            with connect() as conn_registro, conn_registro.cursor() as cursor:
+                cursor.execute(
+                    "SELECT co.nombre FROM calificacion c "
+                    "JOIN corredora co ON co.id_corredora = c.id_corredora "
+                    "WHERE c.id_calificacion = %s",
+                    (id_calificacion,),
+                )
+                fila_registro = cursor.fetchone()
+                nombre_registro = fila_registro[0] if fila_registro else ""
         estado = {
             "campos": campos_vista,
+            "elegir_corredora": elegir_corredora,
+            "corredoras_opcion": [c for c in corredoras if not c["es_bolsa"]] if elegir_corredora else [],
+            "id_corredora_sel": form.get("id_corredora", ""),
             "montos": montos_vista,
             "factores": factores_vista,
             "firma": firma or form.get("firma_montos", ""),
             "mensaje": mensaje,
-            "nombre_corredora": next(
+            "nombre_corredora": nombre_registro or next(
                 (c["nombre"] for c in corredoras
                  if c["id_corredora"] == usuario.id_corredora), "",
             ),
@@ -779,11 +1006,10 @@ def create_app(test_config=None):
         )
 
     def calcular_desde_formulario(titulo, usuario, id_calificacion=None):
-        """Boton Calcular sin JavaScript: muestra los factores y no guarda nada."""
         montos = leer_montos(request.form)
         calculados = calculo.calcular_factores(montos)
         factores = {c: calculados[c] for c in COLUMNAS_CALCULADAS}
-        for columna in FACTORES_MANUALES:      # lo escrito a mano se conserva
+        for columna in FACTORES_MANUALES:
             factores[columna] = (request.form.get(f"factor_{columna}") or "").strip() or None
         return render_formulario(
             titulo, usuario, id_calificacion, montos=montos, factores=factores,
@@ -792,7 +1018,6 @@ def create_app(test_config=None):
         )
 
     def validar_para_grabar():
-        """Valida todo lo que se va a guardar. Devuelve campos, montos y factores."""
         campos = leer_campos(request.form)
         montos = leer_montos(request.form)
         factores = leer_factores(request.form)
@@ -803,12 +1028,12 @@ def create_app(test_config=None):
             raise ErrorFlujo(
                 "Los montos cambiaron después del cálculo. Presiona Calcular antes de grabar."
             )
-        calculo.validar_factores(factores)     # cada factor entre 0 y 1, 8 decimales, suma <= 1
+        calculo.validar_factores(factores)
         return campos, montos, factores
 
     @app.route("/calificaciones/nueva", methods=("GET", "POST"))
     @requiere_login
-    @solo_corredor
+    @puede_modificar
     def nueva_calificacion():
         usuario = g.usuario
         titulo = "Ingresar calificación"
@@ -820,16 +1045,24 @@ def create_app(test_config=None):
             if request.form.get("accion") == "calcular":
                 return calcular_desde_formulario(titulo, usuario)
             campos, montos, factores = validar_para_grabar()
-            # Todo en una transaccion: calificacion, montos, factores y log.
             with connect() as conn:
                 with conn.cursor() as cursor:
+                    if usuario.rol == "administrador":
+                        id_destino = parse_entero(request.form.get("id_corredora"), "Corredora", 1)
+                    else:
+                        id_destino = usuario.id_corredora
                     cursor.execute(
                         "SELECT es_bolsa FROM corredora WHERE id_corredora = %s",
-                        (usuario.id_corredora,),
+                        (id_destino,),
                     )
                     corredora = cursor.fetchone()
                     if corredora is None:
-                        raise ErrorFlujo("Tu cuenta no tiene una corredora asignada.")
+                        raise ErrorFlujo(
+                            "Elige una corredora existente." if usuario.rol == "administrador"
+                            else "Tu cuenta no tiene una corredora asignada."
+                        )
+                    if usuario.rol == "administrador" and corredora[0]:
+                        raise ErrorFlujo("Los datos oficiales de Bolsa no se pueden ingresar desde el mantenedor.")
                     origen = "bolsa" if corredora[0] else "manual"
                     cursor.execute(
                         """
@@ -841,7 +1074,7 @@ def create_app(test_config=None):
                         RETURNING id_calificacion
                         """,
                         (
-                            usuario.id_corredora,
+                            id_destino,
                             campos["ejercicio"],
                             campos["mercado"],
                             campos["instrumento"],
@@ -869,7 +1102,7 @@ def create_app(test_config=None):
 
     @app.route("/calificaciones/<int:id_calificacion>/editar", methods=("GET", "POST"))
     @requiere_login
-    @solo_corredor
+    @puede_modificar
     def editar_calificacion(id_calificacion):
         usuario = g.usuario
         titulo = "Modificar calificación"
@@ -930,10 +1163,10 @@ def create_app(test_config=None):
 
     @app.route("/calificaciones/<int:id_calificacion>/eliminar", methods=("GET", "POST"))
     @requiere_login
-    @solo_corredor
+    @puede_modificar
     def eliminar_calificacion(id_calificacion):
         usuario = g.usuario
-        if request.method == "GET":     # pantalla de confirmacion
+        if request.method == "GET":
             with connect() as conn:
                 registro = consultar_registro(conn, id_calificacion, usuario, para_editar=True)
             if registro["es_bolsa"]:
@@ -959,7 +1192,7 @@ def create_app(test_config=None):
         return redirect(url_for("calificaciones"))
 
     # ------------------------------------------------------------------
-    # Errores: mensajes claros, sin detalles tecnicos
+    # Errores
     # ------------------------------------------------------------------
     def pagina_error(titulo, mensaje, codigo):
         return render_template("error.html", titulo=titulo, mensaje=mensaje), codigo
@@ -971,6 +1204,10 @@ def create_app(test_config=None):
             getattr(error, "description", "Revisa los datos e intenta nuevamente."),
             400,
         )
+
+    @app.errorhandler(413)
+    def error_archivo_grande(error):
+        return pagina_error("Archivo demasiado grande", "El archivo supera los 4 MB permitidos.", 413)
 
     @app.errorhandler(403)
     def error_permiso(error):

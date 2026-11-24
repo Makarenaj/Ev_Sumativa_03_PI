@@ -211,7 +211,7 @@ class PruebasAplicacion(unittest.TestCase):
 
 
 class PruebasSoloLectura(unittest.TestCase):
-    """Analista y administrador consultan, pero no crean, modifican ni eliminan."""
+    """El analista consulta, pero no crea, modifican ni eliminan."""
 
     def setUp(self):
         class CursorAnalista(CursorFalso):
