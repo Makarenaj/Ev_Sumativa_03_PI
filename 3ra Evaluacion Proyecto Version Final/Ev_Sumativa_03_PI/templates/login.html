@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Iniciar sesión | Mantenedor de Calificaciones{% endblock %}
+{% block page_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
+{% endblock %}
+{% block content %}
+<section class="login-layout">
+  <div class="login-card">
+    <h1>Iniciar sesión</h1>
+    <p class="muted">Ingresa con tu cuenta para continuar al sistema de calificaciones.</p>
+    <form action="{{ url_for('login') }}" method="post" autocomplete="on">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field">
+        <label for="correo">Correo electrónico</label>
+        <input id="correo" name="correo" type="email" maxlength="150"
+               autocomplete="username" placeholder="nombre@empresa.cl" required>
+      </div>
+      <div class="field">
+        <label for="clave">Contraseña</label>
+        <input id="clave" name="clave" type="password" minlength="8" maxlength="1024"
+               autocomplete="current-password" placeholder="Mínimo 8 caracteres" required>
+      </div>
+      <p class="field-help">Tu perfil (corredor, analista o administrador) se asigna desde tu cuenta. Tras 5 intentos fallidos la cuenta se bloquea 15 minutos.</p>
+      <button class="button button-primary button-wide" type="submit">Ingresar</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}{{ registro.instrumento }} | Mantenedor{% endblock %}
+{% block ruta %}<a href="{{ url_for('calificaciones') }}">Calificaciones</a> &gt; Detalle{% endblock %}
+{% block page_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='formulario.css') }}">
+{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <h1>{{ registro.instrumento }}</h1>
+    <p class="muted">Detalle de la calificación (solo lectura).
+      {% if registro.es_bolsa %}Dato oficial de Bolsa: no se puede modificar ni eliminar.{% endif %}</p>
+  </div>
+  <div class="row-actions">
+    <a class="button button-quiet" href="{{ url_for('calificaciones') }}">Volver</a>
+    {% if editable %}
+    <a class="button button-secondary" href="{{ url_for('editar_calificacion', id_calificacion=registro.id_calificacion) }}">Modificar</a>
+    {% endif %}
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Datos de la calificación</h2>
+  <dl class="datos">
+    <div><dt>Corredora</dt><dd>{{ registro.nombre_corredora }}{% if registro.es_bolsa %} <span class="badge badge-official">Oficial</span>{% endif %}</dd></div>
+    <div><dt>Ejercicio</dt><dd>{{ registro.ejercicio }}</dd></div>
+    <div><dt>Mercado</dt><dd>{{ registro.mercado }}</dd></div>
+    <div><dt>Fecha</dt><dd>{{ registro.fecha.strftime("%d-%m-%Y") }}</dd></div>
+    <div><dt>Secuencia</dt><dd>{{ registro.secuencia }}</dd></div>
+    <div><dt>Número de dividendo</dt><dd>{{ registro.numero_dividendo if registro.numero_dividendo is not none else "—" }}</dd></div>
+    <div><dt>Tipo de sociedad</dt><dd>{{ registro.tipo_sociedad or "—" }}</dd></div>
+    <div><dt>Valor histórico</dt><dd>{{ registro.valor_historico|monto if registro.valor_historico is not none else "—" }}</dd></div>
+    <div><dt>Fuente</dt><dd>{{ origenes.get(registro.origen, registro.origen) }}</dd></div>
+    <div><dt>Creada</dt><dd>{{ registro.creado_en|fecha_hora }}</dd></div>
+    <div><dt>Última modificación</dt><dd>{{ registro.modificado_en|fecha_hora or "Sin modificaciones" }}</dd></div>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Montos y factores</h2>
+  <div class="summary-grid">
+    <div class="summary-card">
+      <span>Suma de montos (columnas {{ suma_desde }}–{{ suma_hasta }})</span>
+      <strong>{{ suma_montos|monto }}</strong>
+    </div>
+    <div class="summary-card {% if suma_factores > 1 %}summary-error{% endif %}">
+      <span>Suma de factores (columnas {{ suma_desde }}–{{ suma_hasta }})</span>
+      <strong>{{ suma_factores|factor }}</strong>
+      <em>{{ "Supera 1." if suma_factores > 1 else "Cumple: no supera 1." }}</em>
+    </div>
+  </div>
+  <div class="table-scroll detail-table">
+    <table>
+      <thead><tr><th>Columna</th><th class="numeric">Monto</th><th class="numeric">Factor</th></tr></thead>
+      <tbody>
+      {% for columna in range(8, 38) %}
+        {% if columna in montos or columna in factores %}
+        <tr>
+          <th scope="row">{{ columna }}</th>
+          <td class="numeric">{{ montos[columna]|monto if columna in montos else "—" }}</td>
+          <td class="numeric">{{ factores[columna]|factor if columna in factores else "—" }}</td>
+        </tr>
+        {% endif %}
+      {% endfor %}
+      {% if not montos and not factores %}
+        <tr><td colspan="3" class="field-help">Sin montos ni factores registrados.</td></tr>
+      {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

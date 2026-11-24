@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Carga masiva | Mantenedor{% endblock %}
+{% block ruta %}Carga masiva (CSV){% endblock %}
+{% block page_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='calificaciones.css') }}">
+{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <h1>Carga masiva (CSV)</h1>
+    <p class="muted">
+      Sube un archivo con calificaciones y factores. Antes de guardar se muestra una previsualización.
+      Si una sola fila es inválida, el archivo se rechaza completo y no se guarda nada.
+    </p>
+  </div>
+  <a class="button button-quiet" href="{{ url_for('calificaciones') }}">Volver al mantenedor</a>
+</section>
+
+<section class="panel">
+  <form action="{{ url_for('cargar_csv') }}" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="accion" value="previsualizar">
+    <div class="field">
+      <label for="archivo_csv">Archivo CSV (UTF-8)</label>
+      <input id="archivo_csv" name="archivo_csv" type="file" accept=".csv,text/csv" required>
+      <span class="field-help">
+        Separador coma (decimales con punto) o punto y coma (decimales con coma). Máximo 4 MB y 5.000 filas.
+        Si la llave ya existe en tu corredora se actualiza; si no, se agrega.
+        <a href="{{ url_for('ejemplo_csv') }}">Descargar archivo de ejemplo</a>.
+      </span>
+    </div>
+    <button class="button button-primary" type="submit">Previsualizar</button>
+  </form>
+  <details>
+    <summary>Columnas del archivo (hoja 3.1 del HDU)</summary>
+    <p class="muted">
+      ejercicio, mercado, instrumento, fecha (aaaa-mm-dd o dd-mm-aaaa), secuencia (mayor que 10.000),
+      numero_dividendo, tipo_sociedad (A o C), valor_historico y factor_8 a factor_37 (hasta 8 decimales).
+      Los factores vacíos valen 0, la suma de los factores 8 a 19 no puede superar 1 y los factores 34 a 37
+      solo se guardan si traen valor.
+    </p>
+  </details>
+</section>
+
+{% if vista %}
+<section class="panel">
+  <h2>Resultado de «{{ vista.nombre }}»</h2>
+  {% if vista.resultado.error_formato %}
+    <p class="alert alert-error"><strong>Error:</strong> {{ vista.resultado.error_formato }}</p>
+  {% elif vista.errores %}
+    <p class="alert alert-error"><strong>Error:</strong>
+      Se leyeron {{ vista.resultado.total }} filas y {{ vista.resultado.filas_invalidas }} tienen errores.
+      El archivo se rechazó completo y no se guardó nada.</p>
+    <div class="table-scroll">
+      <table class="tabla-tarjetas">
+        <thead><tr><th>Fila del archivo</th><th>Qué corregir</th></tr></thead>
+        <tbody>
+        {% for linea, mensaje in vista.errores %}
+          <tr><td data-label="Fila del archivo">{{ linea }}</td><td data-label="Qué corregir">{{ mensaje }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="field-help">La fila 1 es el encabezado. Se muestran hasta 50 errores.</p>
+  {% else %}
+    <p class="alert alert-ok"><strong>Listo:</strong>
+      {{ vista.resultado.total }} filas válidas: {{ vista.agregan }} se agregan y {{ vista.actualizan }} se actualizan.
+      Todavía no se guardó nada.</p>
+    <div class="table-scroll">
+      <table class="tabla-tarjetas">
+        <thead>
+          <tr>
+            <th>Fila</th><th>Instrumento</th><th>Ejercicio / mercado</th><th>Secuencia</th>
+            <th class="numeric">Suma factores {{ suma_desde }}–{{ suma_hasta }}</th><th>Estado</th><th>Qué pasa al confirmar</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for fila in vista.filas %}
+          <tr>
+            <td data-label="Fila">{{ fila.linea }}</td>
+            <td data-label="Instrumento"><strong>{{ fila.instrumento }}</strong></td>
+            <td data-label="Ejercicio / mercado">{{ fila.ejercicio }} / {{ fila.mercado }}</td>
+            <td data-label="Secuencia">{{ fila.secuencia }}</td>
+            <td class="numeric" data-label="Suma factores {{ suma_desde }}–{{ suma_hasta }}"><strong>{{ fila.suma|factor }}</strong></td>
+            <td data-label="Estado">OK</td>
+            <td data-label="Qué pasa al confirmar">{{ fila.accion }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if vista.mas_filas %}<p class="field-help">Se muestran las primeras 200 filas; el archivo tiene {{ vista.mas_filas }} más.</p>{% endif %}
+    <form action="{{ url_for('cargar_csv') }}" method="post" class="row-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="accion" value="confirmar">
+      <input type="hidden" name="nombre_archivo" value="{{ vista.nombre }}">
+      <input type="hidden" name="contenido_csv" value="{{ contenido }}">
+      <button class="button button-primary" type="submit">Confirmar carga</button>
+      <a class="button button-quiet" href="{{ url_for('cargar_csv') }}">Cancelar</a>
+    </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

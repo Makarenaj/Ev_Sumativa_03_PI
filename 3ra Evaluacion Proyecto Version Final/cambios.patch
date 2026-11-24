@@ -1,0 +1,1554 @@
+diff -ruN a/DECISIONES.md repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/DECISIONES.md
+--- a/DECISIONES.md	2026-11-17 04:47:41.000000000 +0000
++++ b/DECISIONES.md	2026-11-22 06:02:39.725136159 +0000
+@@ -26,7 +26,7 @@
+ 
+ | Tema | Decisión | Por qué |
+ |---|---|---|
+-| Quién ingresa, modifica y elimina | Solo el perfil corredor, y solo lo de su corredora. Analista y administrador consultan todo en solo lectura | Es la tabla de roles del informe de diseño (4.5.1). Se revisa en el servidor, no solo en pantalla. |
++| Quién ingresa, modifica y elimina | El corredor, solo en su corredora, y el administrador, en cualquier corredora. El analista solo consulta. Lo oficial de Bolsa no lo modifica nadie | Se revisa en el servidor (`requiere_perfil`, `puede_editar`), no solo en pantalla, y el trigger de la base lo respalda. |
+ | Acceso entre corredoras | Pedir por URL un registro de otra corredora responde 404, sin entregar datos | El corredor no debe saber siquiera si el registro existe. |
+ | Datos oficiales de Bolsa | El corredor los ve en su mantenedor, bloqueados. Si ingresa la misma llave, se muestra la suya ("Predomina sobre Bolsa") | Reglas del HDU: lo del corredor es local y predomina sobre lo de Bolsa. |
+ | Calcular, Grabar y Cancelar | Calcular muestra los factores y no guarda nada. Los factores 8 a 33 se pueden editar antes de Grabar; lo que se guarda es lo editado | Historias 3 y 4 del HDU. |
+@@ -42,3 +42,16 @@
+ | Formato de números | Montos con punto de miles y factores con coma decimal | Formato chileno. Los factores aceptan coma o punto al escribirlos. |
+ 
+ Cómo instalar, ejecutar y probar: ver `README.md`.
++
++
++## Carga masiva (CSV) y registro de operaciones
++
++| Tema | Decisión | Dónde está |
++|---|---|---|
++| Quién carga | Solo el corredor, en su corredora | `app.py`: `cargar_csv` (`solo_corredor`) |
++| Formato | Hoja 3.1 del HDU: ejercicio, mercado, instrumento, fecha, secuencia, numero_dividendo, tipo_sociedad, valor_historico y factor_8 a factor_37. Coma o punto y coma, UTF-8, máximo 5.000 filas y 4 MB | `carga_csv.py` |
++| Filas inválidas | Se rechaza el archivo completo y no se guarda nada; la carga rechazada queda en `carga_archivo` con su motivo | `app.py`: `registrar_rechazo` |
++| Llave y actualización | Si la llave (corredora, ejercicio, mercado, instrumento, secuencia) existe se actualiza; si no, se agrega. Al actualizar con factores se borran los montos anteriores | `app.py`: `aplicar_carga` |
++| Transacción | Toda la carga se guarda en una sola transacción: o entra completa o no entra | `app.py`: `aplicar_carga` |
++| Log | Una entrada `carga_masiva` por archivo, con agregadas y actualizadas, y origen `carga_masiva` | `app.py`: `insertar_log` |
++| Quién lee el log | Analista y administrador, en solo lectura | `app.py`: `ver_log`, `templates/log.html` |
+diff -ruN a/README.md repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/README.md
+--- a/README.md	2026-11-17 04:47:41.000000000 +0000
++++ b/README.md	2026-11-22 06:02:39.724709520 +0000
+@@ -45,8 +45,9 @@
+    ```
+    python crear_admin.py
+    ```
+-6. Crea un corredor. El ingreso, la modificación y la eliminación son exclusivos
+-   del perfil corredor, así que sin este paso no se puede mostrar el flujo.
++6. Crea un corredor. El corredor es el único perfil que puede cargar archivos CSV
++   y es el que recorre el flujo ideal; el administrador también ingresa, modifica
++   y elimina calificaciones, pero eligiendo la corredora.
+    Primero mira el ID de la corredora:
+    ```
+    psql -U postgres -d calificaciones -c "SELECT id_corredora, nombre FROM corredora"
+@@ -83,14 +84,21 @@
+    pantalla. Si supera 1, no se graba.
+ 6. Presiona Grabar. La calificación aparece en el mantenedor con fuente "Manual".
+ 7. Usa Ver, Modificar y Eliminar. Cada operación deja una fila en `log_operacion`.
++8. Entra a "Carga masiva (CSV)" y sube `ejemplos/carga_valida.csv` (o descárgalo con
++   el enlace de la pantalla). La previsualización indica cada fila y si se agrega o
++   se actualiza; al confirmar se guardan. Con `ejemplos/carga_con_error.csv` el
++   archivo se rechaza completo, indicando la fila y el motivo, y no se guarda nada.
++9. Entra como administrador: puede modificar una calificación de cualquier corredora
++   y, en "Registro de operaciones", ve quién hizo cada operación, cuándo y con qué
++   origen. El analista también consulta el registro, pero no modifica nada.
+ 
+ ## Perfiles y permisos
+ 
+-| Perfil | Calificaciones de su corredora | Otras corredoras | Datos oficiales de Bolsa |
+-|---|---|---|---|
+-| Corredor | Consulta, ingresa, modifica y elimina | Sin acceso (responde 404) | Solo lectura |
+-| Analista | No ingresa ni modifica | Consulta todas | Solo lectura |
+-| Administrador | No ingresa ni modifica | Consulta todas | Solo lectura |
++| Perfil | Calificaciones de su corredora | Otras corredoras | Carga CSV | Registro de operaciones | Datos oficiales de Bolsa |
++|---|---|---|---|---|---|
++| Corredor | Consulta, ingresa, modifica y elimina | Sin acceso (responde 404) | Sí | Sin acceso (403) | Solo lectura |
++| Analista | No ingresa ni modifica | Consulta todas | No (403) | Consulta | Solo lectura |
++| Administrador | Ingresa, modifica y elimina en cualquier corredora | Ingresa, modifica y elimina | No (403) | Consulta | Solo lectura |
+ 
+ Si el corredor ingresa una calificación con la misma llave que una oficial de
+ Bolsa, en su mantenedor se muestra la suya ("Predomina sobre Bolsa").
+@@ -102,7 +110,8 @@
+ | Hash de claves (PBKDF2-SHA256 con sal, 600.000 iteraciones) | `seguridad.py`: `hash_clave`, `verificar_clave` |
+ | Consultas parametrizadas en todo el acceso a datos | `app.py` y `seguridad.py` (parámetros `%s`) |
+ | Validación de entradas en el servidor (tipo, largo, formato, rango) | `app.py`: `leer_campos`, `leer_montos`, `leer_factores`; `calculo.py`: `validar_factores` |
+-| Acceso por perfil y por corredora, revisado en el servidor | `app.py`: `requiere_login`, `solo_corredor`, `consultar_registro` |
++| Acceso por perfil y por corredora, revisado en el servidor | `app.py`: `requiere_login`, `requiere_perfil` (`solo_corredor`, `puede_modificar`), `puede_editar`, `consultar_registro` |
++| Validación del archivo CSV (extensión, UTF-8, tamaño, columnas y cada fila) y carga en una sola transacción | `carga_csv.py`: `leer_csv`, `validar_fila_csv`; `app.py`: `cargar_csv`, `aplicar_carga` |
+ | Token CSRF en todos los formularios | `app.py`: `proteger_post` |
+ | Bloqueo de la cuenta tras 5 intentos fallidos, por 15 minutos | `seguridad.py`: `autenticar` |
+ | Cierre de sesión por inactividad y cookie HttpOnly y SameSite | `app.py`: `usuario_actual`, `create_app` |
+@@ -133,10 +142,10 @@
+ python -m pytest -q
+ ```
+ 
+-Sin configuración adicional corren 39 pruebas: 13 del cálculo, 9 de seguridad y
+-17 de las rutas web con una conexión simulada.
++Sin configuración adicional corren 72 pruebas: 13 del cálculo, 33 del CSV, 9 de
++seguridad y 17 de las rutas web con una conexión simulada.
+ 
+-Las 26 pruebas de integración usan PostgreSQL real y recorren el flujo ideal y
++Las 38 pruebas de integración usan PostgreSQL real y recorren el flujo ideal y
+ los casos de error, de borde y de seguridad. La base de pruebas se borra y se
+ vuelve a crear en cada corrida, por eso su nombre debe terminar en `_test`:
+ 
+@@ -146,4 +155,17 @@
+ python -m pytest -v test_integracion_pg.py
+ ```
+ 
++## Decisiones del caso
++
++- Rango de la suma de factores: 8 al 19 (cada factor es su monto dividido por la suma de las columnas 8 a 19).
++- Filas inválidas en un CSV: se rechaza todo el archivo hasta que esté completamente válido; no se guarda ninguna fila.
++- Llave que identifica una calificación: corredora, ejercicio, mercado, instrumento y secuencia. En la carga masiva, si la llave existe se actualiza y si no se agrega.
++- Factores 34 a 37: no se calculan (el HDU no define su regla); solo se guardan si vienen en el CSV.
++- Administrador: ingresa, modifica y elimina calificaciones de cualquier corredora; los datos oficiales de Bolsa quedan bloqueados para todos.
++
++## Problemas frecuentes
++
++- `connection refused`: PostgreSQL no está corriendo o `DATABASE_URL` tiene otra clave o puerto.
++- La pantalla de carga CSV rechaza el archivo: revisa que sea UTF-8, que tenga las 38 columnas de `ejemplos/carga_valida.csv` y que la suma de los factores 8 a 19 no supere 1. El mensaje indica la fila del archivo (la 1 es el encabezado).
++
+ Más decisiones de base de datos, cálculo y seguridad: [DECISIONES.md](./DECISIONES.md).
+diff -ruN a/app.py repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/app.py
+--- a/app.py	2026-11-17 04:47:41.000000000 +0000
++++ b/app.py	2026-11-21 23:27:58.150957744 +0000
+@@ -2,8 +2,10 @@
+ 
+ Flujo ideal: login -> mantenedor (buscar) -> ingresar calificacion -> montos ->
+ Calcular -> factores editables -> Grabar -> la grilla muestra la fila con su fuente.
+-Reglas de permisos: solo el corredor crea, modifica y elimina, y solo lo de su
+-corredora; analista y administrador consultan todo; lo oficial de Bolsa no se toca.
++Reglas de permisos: el corredor crea, modifica, elimina y carga CSV solo en su
++corredora; el administrador crea, modifica y elimina en cualquier corredora; el
++analista solo consulta; analista y administrador consultan el log; lo oficial de
++Bolsa no lo modifica nadie.
+ """
+ import csv
+ import io
+@@ -34,6 +36,7 @@
+ from psycopg.errors import UniqueViolation
+ 
+ import calculo
++import carga_csv
+ from seguridad import (
+     AccesoDenegado,
+     CuentaBloqueada,
+@@ -115,7 +118,7 @@
+         PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+         # la sesion se cierra sola tras este tiempo sin actividad
+         MINUTOS_INACTIVIDAD=int(os.environ.get("MINUTOS_INACTIVIDAD", "15")),
+-        MAX_CONTENT_LENGTH=1024 * 1024,
++        MAX_CONTENT_LENGTH=4 * 1024 * 1024,
+     )
+     app.config.update(config)
+     app.jinja_env.filters["monto"] = formato_monto
+@@ -214,22 +217,25 @@
+ 
+         return protegida
+ 
+-    def solo_corredor(view):
+-        @wraps(view)
+-        def protegida(*args, **kwargs):
+-            if g.usuario.rol != "corredor":
+-                app.logger.warning(
+-                    "Acceso denegado: usuario %s (%s) intento %s %s",
+-                    g.usuario.id_usuario, g.usuario.rol, request.method, request.path,
+-                )
+-                abort(403)
+-            return view(*args, **kwargs)
++    def requiere_perfil(*perfiles):
++        """Deja pasar solo a los perfiles indicados. Se revisa siempre en el servidor."""
++        def decorador(view):
++            @wraps(view)
++            def protegida(*args, **kwargs):
++                if g.usuario.rol not in perfiles:
++                    app.logger.warning(
++                        "Acceso denegado: usuario %s (%s) intento %s %s",
++                        g.usuario.id_usuario, g.usuario.rol, request.method, request.path,
++                    )
++                    abort(403)
++                return view(*args, **kwargs)
+ 
+-        return protegida
++            return protegida
+ 
+-    # ------------------------------------------------------------------
+-    # Lectura y validacion de entradas
+-    # ------------------------------------------------------------------
++        return decorador
++
++    solo_corredor = requiere_perfil("corredor")                    # carga masiva CSV
++    puede_modificar = requiere_perfil("corredor", "administrador")  # ingresar, modificar y eliminar
+     def listar_corredoras(conn, usuario):
+         consulta = "SELECT id_corredora, nombre, es_bolsa FROM corredora"
+         parametros = ()
+@@ -471,30 +477,35 @@
+             "factores": {str(k): str(v) for k, v in factores.items()},
+         }
+ 
+-    def insertar_log(conn, usuario, accion, id_registro, antes=None, despues=None):
++    def insertar_log(conn, usuario, accion, id_registro, antes=None, despues=None,
++                     tabla="calificacion", origen="manual"):
+         with conn.cursor() as cursor:
+             cursor.execute(
+                 """
+                 INSERT INTO log_operacion
+                     (id_usuario, accion, tabla_afectada, id_registro,
+                      datos_antes, datos_despues, origen)
+-                VALUES (%s, %s, 'calificacion', %s, %s::jsonb, %s::jsonb, 'manual')
++                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                 """,
+                 (
+                     usuario.id_usuario,
+                     accion,
++                    tabla,
+                     id_registro,
+                     json.dumps(antes) if antes is not None else None,
+                     json.dumps(despues) if despues is not None else None,
++                    origen,
+                 ),
+             )
+ 
+     def puede_editar(usuario, registro):
+-        return (
+-            usuario.rol == "corredor"
+-            and registro["id_corredora"] == usuario.id_corredora
+-            and not registro["es_bolsa"]
+-        )
++        """El corredor edita lo de su corredora; el administrador lo de cualquiera.
++        Lo oficial de Bolsa no lo edita nadie."""
++        if registro["es_bolsa"]:
++            return False
++        if usuario.rol == "administrador":
++            return True
++        return usuario.rol == "corredor" and registro["id_corredora"] == usuario.id_corredora
+ 
+     # ------------------------------------------------------------------
+     # Inicio y cierre de sesion
+@@ -663,9 +674,11 @@
+                 "fecha_cambio": fila[11],
+                 "modificada": fila[12],
+                 "editable": (
+-                    usuario.rol == "corredor"
+-                    and fila[13] == usuario.id_corredora
+-                    and not fila[2]
++                    not fila[2]
++                    and (
++                        usuario.rol == "administrador"
++                        or (usuario.rol == "corredor" and fila[13] == usuario.id_corredora)
++                    )
+                 ),
+                 "predomina": fila[14],
+             }
+@@ -708,89 +721,181 @@
+         )
+ 
+     # ------------------------------------------------------------------
+-    # NUEVA FUNCIONALIDAD PUNTO 6: Carga CSV con previsualización y validación
++    # Carga masiva por CSV: previsualizacion, validacion fila por fila y carga
++    # en una sola transaccion. Si una fila es invalida se rechaza TODO el archivo.
+     # ------------------------------------------------------------------
++    def registrar_rechazo(usuario, nombre_archivo, resultado):
++        with connect() as conn, conn.cursor() as cursor:
++            cursor.execute(
++                """
++                INSERT INTO carga_archivo
++                    (id_usuario, nombre_archivo, tipo, estado, total_filas,
++                     filas_invalidas, detalle_error)
++                VALUES (%s, %s, 'factores', 'rechazado', %s, %s, %s)
++                """,
++                (
++                    usuario.id_usuario, nombre_archivo[:200], resultado.total,
++                    resultado.filas_invalidas, resultado.resumen_error()[:1000],
++                ),
++            )
++
++    def llaves_existentes(conn, id_corredora):
++        with conn.cursor() as cursor:
++            cursor.execute(
++                "SELECT ejercicio, mercado, instrumento, secuencia "
++                "FROM calificacion WHERE id_corredora = %s",
++                (id_corredora,),
++            )
++            return {tuple(fila) for fila in cursor.fetchall()}
++
++    def aplicar_carga(conn, usuario, nombre_archivo, resultado):
++        """Guarda el archivo ya validado: agrega lo nuevo y actualiza lo que ya existe."""
++        agregadas = actualizadas = 0
++        with conn.cursor() as cursor:
++            cursor.execute(
++                """
++                INSERT INTO carga_archivo
++                    (id_usuario, nombre_archivo, tipo, estado, total_filas, filas_invalidas)
++                VALUES (%s, %s, 'factores', 'confirmado', %s, 0)
++                RETURNING id_carga
++                """,
++                (usuario.id_usuario, nombre_archivo[:200], resultado.total),
++            )
++            id_carga = cursor.fetchone()[0]
++            for fila in resultado.filas:
++                c = fila["campos"]
++                cursor.execute(
++                    """
++                    SELECT id_calificacion FROM calificacion
++                    WHERE id_corredora = %s AND ejercicio = %s AND mercado = %s
++                      AND instrumento = %s AND secuencia = %s
++                    FOR UPDATE
++                    """,
++                    (usuario.id_corredora, c["ejercicio"], c["mercado"], c["instrumento"], c["secuencia"]),
++                )
++                existente = cursor.fetchone()
++                if existente:
++                    id_calificacion = existente[0]
++                    cursor.execute(
++                        """
++                        UPDATE calificacion
++                        SET fecha = %s, numero_dividendo = %s, tipo_sociedad = %s,
++                            valor_historico = %s, origen = 'carga_masiva', id_carga = %s,
++                            modificado_en = now()
++                        WHERE id_calificacion = %s
++                        """,
++                        (c["fecha"], c["numero_dividendo"], c["tipo_sociedad"],
++                         c["valor_historico"], id_carga, id_calificacion),
++                    )
++                    actualizadas += 1
++                else:
++                    cursor.execute(
++                        """
++                        INSERT INTO calificacion
++                            (id_corredora, ejercicio, mercado, instrumento, fecha, secuencia,
++                             numero_dividendo, tipo_sociedad, valor_historico, origen,
++                             id_carga, creado_por)
++                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'carga_masiva', %s, %s)
++                        RETURNING id_calificacion
++                        """,
++                        (usuario.id_corredora, c["ejercicio"], c["mercado"], c["instrumento"],
++                         c["fecha"], c["secuencia"], c["numero_dividendo"], c["tipo_sociedad"],
++                         c["valor_historico"], id_carga, usuario.id_usuario),
++                    )
++                    id_calificacion = cursor.fetchone()[0]
++                    agregadas += 1
++                # el archivo trae factores, asi que los montos anteriores ya no corresponden
++                guardar_detalles(conn, id_calificacion, {}, fila["factores"], reemplazar=True)
++        insertar_log(
++            conn, usuario, "carga_masiva", id_carga,
++            despues={
++                "archivo": nombre_archivo[:200], "filas": resultado.total,
++                "agregadas": agregadas, "actualizadas": actualizadas,
++            },
++            tabla="carga_archivo", origen="carga_masiva",
++        )
++        return agregadas, actualizadas
++
++    @app.get("/calificaciones/cargar-csv/ejemplo")
++    @requiere_login
++    @solo_corredor
++    def ejemplo_csv():
++        return app.response_class(
++            carga_csv.ejemplo_csv(),
++            mimetype="text/csv",
++            headers={"Content-Disposition": "attachment; filename=ejemplo_carga.csv"},
++        )
++
+     @app.route("/calificaciones/cargar-csv", methods=("GET", "POST"))
+     @requiere_login
+     @solo_corredor
+     def cargar_csv():
+         usuario = g.usuario
+         if request.method == "GET":
+-            return render_template("cargar_csv.html", previsualizacion=None)
+-
++            return render_template("cargar_csv.html", vista=None)
+         accion = request.form.get("accion", "previsualizar")
+-        archivo = request.files.get("archivo_csv")
+-
+-        if not archivo or not archivo.filename.endswith(".csv"):
+-            flash("Error: Sube un archivo CSV válido.", "error")
+-            return redirect(url_for("cargar_csv"))
+-
+-        try:
+-            contenido = archivo.stream.read().decode("UTF-8")
+-            stream = io.StringIO(contenido, newline=None)
+-            csv_reader = csv.reader(stream)
+-
+-            filas_datos = []
+-            for i, fila in enumerate(csv_reader, start=1):
+-                if not fila or all(not col.strip() for col in fila):
+-                    continue
+-                # Regla de validación de filas: mínimo de columnas requeridas
+-                if len(fila) < 5:
+-                    raise ErrorFlujo(f"Línea {i}: Fila inválida o incompleta (faltan columnas obligatorias).")
+-                filas_datos.append({
+-                    "linea": i,
+-                    "ejercicio": fila[0].strip(),
+-                    "mercado": fila[1].strip(),
+-                    "instrumento": fila[2].strip(),
+-                    "fecha": fila[3].strip(),
+-                    "secuencia": fila[4].strip(),
+-                })
+-
++        if accion not in ("previsualizar", "confirmar"):
++            abort(400)
++        if accion == "previsualizar":
++            archivo = request.files.get("archivo_csv")
++            if archivo is None or not archivo.filename.lower().endswith(".csv"):
++                flash("Sube un archivo con extensión .csv.", "error")
++                return render_template("cargar_csv.html", vista=None), 400
++            nombre = os.path.basename(archivo.filename)
++            try:
++                texto = archivo.stream.read().decode("utf-8-sig")
++            except UnicodeDecodeError:
++                flash("El archivo no está en UTF-8. Guárdalo como «CSV UTF-8» y vuelve a subirlo.", "error")
++                return render_template("cargar_csv.html", vista=None), 400
++        else:
++            texto = request.form.get("contenido_csv", "")
++            nombre = os.path.basename(request.form.get("nombre_archivo", "archivo.csv"))
++        resultado = carga_csv.leer_csv(texto)
++        if not resultado.valido:
++            registrar_rechazo(usuario, nombre, resultado)
++            flash("El archivo se rechazó completo: no se guardó ninguna fila. "
++                  "Corrígelo y vuelve a subirlo.", "error")
++            return render_template(
++                "cargar_csv.html",
++                vista={"nombre": nombre, "resultado": resultado, "filas": [], "errores": resultado.errores[:50]},
++            ), 400
++        with connect() as conn:
++            with conn.cursor() as cursor:
++                cursor.execute(
++                    "SELECT es_bolsa FROM corredora WHERE id_corredora = %s",
++                    (usuario.id_corredora,),
++                )
++                corredora = cursor.fetchone()
++            if corredora is None or corredora[0]:
++                abort(403, description="Tu corredora no está autorizada para la carga masiva.")
+             if accion == "previsualizar":
+-                return render_template("cargar_csv.html", previsualizacion=filas_datos, contenido_csv=contenido)
+-
+-            elif accion == "confirmar":
+-                with connect() as conn:
+-                    with conn.cursor() as cursor:
+-                        cursor.execute(
+-                            "SELECT es_bolsa FROM corredora WHERE id_corredora = %s",
+-                            (usuario.id_corredora,),
+-                        )
+-                        corredora = cursor.fetchone()
+-                        if corredora is None or corredora[0]:
+-                            raise ErrorFlujo("Tu corredora no está autorizada para carga masiva.")
+-
+-                        for item in filas_datos:
+-                            ejercicio = parse_entero(item["ejercicio"], f"Línea {item['linea']} - Ejercicio", 1900, 2100)
+-                            mercado = item["mercado"].upper()
+-                            instrumento = item["instrumento"]
+-                            fecha = date.fromisoformat(item["fecha"])
+-                            secuencia = parse_entero(item["secuencia"], f"Línea {item['linea']} - Secuencia", SECUENCIA_MINIMA, 9_223_372_036_854_775_807)
+-
+-                            cursor.execute(
+-                                """
+-                                INSERT INTO calificacion
+-                                    (id_corredora, ejercicio, mercado, instrumento, fecha,
+-                                     secuencia, origen, creado_por)
+-                                VALUES (%s, %s, %s, %s, %s, %s, 'carga_masiva', %s)
+-                                RETURNING id_calificacion
+-                                """,
+-                                (
+-                                    usuario.id_corredora,
+-                                    ejercicio,
+-                                    mercado,
+-                                    instrumento,
+-                                    fecha,
+-                                    secuencia,
+-                                    usuario.id_usuario,
+-                                ),
+-                            )
+-                flash(f"Carga masiva completada correctamente. {len(filas_datos)} registros importados.", "ok")
+-                return redirect(url_for("calificaciones"))
+-
+-        except (ErrorFlujo, ValueError, Exception) as error:
+-            flash(f"Error al procesar el archivo CSV (Fila inválida o formato incorrecto): {str(error)}", "error")
+-            return render_template("cargar_csv.html", previsualizacion=None), 400
++                existentes = llaves_existentes(conn, usuario.id_corredora)
++                filas = []
++                for fila in resultado.filas:
++                    c = fila["campos"]
++                    llave = (c["ejercicio"], c["mercado"], c["instrumento"], c["secuencia"])
++                    filas.append({
++                        **c, "linea": fila["linea"],
++                        "accion": "Actualiza" if llave in existentes else "Agrega",
++                        "suma": sum(
++                            (fila["factores"].get(n, Decimal("0")) for n in range(SUMA_DESDE, SUMA_HASTA + 1)),
++                            Decimal("0"),
++                        ),
++                    })
++                return render_template(
++                    "cargar_csv.html",
++                    vista={
++                        "nombre": nombre, "resultado": resultado, "filas": filas[:200],
++                        "mas_filas": max(len(filas) - 200, 0), "errores": [],
++                        "agregan": sum(1 for f in filas if f["accion"] == "Agrega"),
++                        "actualizan": sum(1 for f in filas if f["accion"] == "Actualiza"),
++                    },
++                    contenido=texto,
++                )
++            agregadas, actualizadas = aplicar_carga(conn, usuario, nombre, resultado)
++        flash(f"Carga masiva completada: {agregadas} calificaciones agregadas y "
++              f"{actualizadas} actualizadas.", "ok")
++        return redirect(url_for("calificaciones"))
+ 
+     # ------------------------------------------------------------------
+     # NUEVA FUNCIONALIDAD PUNTO 6/7: Consulta del log de solo lectura
+@@ -863,13 +968,28 @@
+                 )
+             else:
+                 factores_vista[columna] = (form.get(f"factor_{columna}") or "").strip()
++        elegir_corredora = usuario.rol == "administrador" and id_calificacion is None
++        nombre_registro = ""
++        if usuario.rol == "administrador" and id_calificacion is not None:
++            with connect() as conn_registro, conn_registro.cursor() as cursor:
++                cursor.execute(
++                    "SELECT co.nombre FROM calificacion c "
++                    "JOIN corredora co ON co.id_corredora = c.id_corredora "
++                    "WHERE c.id_calificacion = %s",
++                    (id_calificacion,),
++                )
++                fila_registro = cursor.fetchone()
++                nombre_registro = fila_registro[0] if fila_registro else ""
+         estado = {
+             "campos": campos_vista,
++            "elegir_corredora": elegir_corredora,
++            "corredoras_opcion": [c for c in corredoras if not c["es_bolsa"]] if elegir_corredora else [],
++            "id_corredora_sel": form.get("id_corredora", ""),
+             "montos": montos_vista,
+             "factores": factores_vista,
+             "firma": firma or form.get("firma_montos", ""),
+             "mensaje": mensaje,
+-            "nombre_corredora": next(
++            "nombre_corredora": nombre_registro or next(
+                 (c["nombre"] for c in corredoras
+                  if c["id_corredora"] == usuario.id_corredora), "",
+             ),
+@@ -913,7 +1033,7 @@
+ 
+     @app.route("/calificaciones/nueva", methods=("GET", "POST"))
+     @requiere_login
+-    @solo_corredor
++    @puede_modificar
+     def nueva_calificacion():
+         usuario = g.usuario
+         titulo = "Ingresar calificación"
+@@ -927,13 +1047,22 @@
+             campos, montos, factores = validar_para_grabar()
+             with connect() as conn:
+                 with conn.cursor() as cursor:
++                    if usuario.rol == "administrador":
++                        id_destino = parse_entero(request.form.get("id_corredora"), "Corredora", 1)
++                    else:
++                        id_destino = usuario.id_corredora
+                     cursor.execute(
+                         "SELECT es_bolsa FROM corredora WHERE id_corredora = %s",
+-                        (usuario.id_corredora,),
++                        (id_destino,),
+                     )
+                     corredora = cursor.fetchone()
+                     if corredora is None:
+-                        raise ErrorFlujo("Tu cuenta no tiene una corredora asignada.")
++                        raise ErrorFlujo(
++                            "Elige una corredora existente." if usuario.rol == "administrador"
++                            else "Tu cuenta no tiene una corredora asignada."
++                        )
++                    if usuario.rol == "administrador" and corredora[0]:
++                        raise ErrorFlujo("Los datos oficiales de Bolsa no se pueden ingresar desde el mantenedor.")
+                     origen = "bolsa" if corredora[0] else "manual"
+                     cursor.execute(
+                         """
+@@ -945,7 +1074,7 @@
+                         RETURNING id_calificacion
+                         """,
+                         (
+-                            usuario.id_corredora,
++                            id_destino,
+                             campos["ejercicio"],
+                             campos["mercado"],
+                             campos["instrumento"],
+@@ -973,7 +1102,7 @@
+ 
+     @app.route("/calificaciones/<int:id_calificacion>/editar", methods=("GET", "POST"))
+     @requiere_login
+-    @solo_corredor
++    @puede_modificar
+     def editar_calificacion(id_calificacion):
+         usuario = g.usuario
+         titulo = "Modificar calificación"
+@@ -1034,7 +1163,7 @@
+ 
+     @app.route("/calificaciones/<int:id_calificacion>/eliminar", methods=("GET", "POST"))
+     @requiere_login
+-    @solo_corredor
++    @puede_modificar
+     def eliminar_calificacion(id_calificacion):
+         usuario = g.usuario
+         if request.method == "GET":
+@@ -1076,6 +1205,10 @@
+             400,
+         )
+ 
++    @app.errorhandler(413)
++    def error_archivo_grande(error):
++        return pagina_error("Archivo demasiado grande", "El archivo supera los 4 MB permitidos.", 413)
++
+     @app.errorhandler(403)
+     def error_permiso(error):
+         usuario_actual()
+diff -ruN a/carga_csv.py repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/carga_csv.py
+--- a/carga_csv.py	1970-01-01 00:00:00.000000000 +0000
++++ b/carga_csv.py	2026-11-21 17:54:01.480438779 +0000
+@@ -0,0 +1,233 @@
++"""Lectura y validacion del archivo CSV de la carga masiva (formato de la hoja 3.1 del HDU).
++
++Reglas del grupo:
++  - El archivo se rechaza COMPLETO si una sola fila es invalida: no se guarda nada
++    hasta que el archivo este totalmente valido.
++  - Separador coma (decimales con punto) o punto y coma (decimales con coma, como
++    lo exporta Excel en Chile). Codificacion UTF-8.
++  - Cada fila lleva los datos de la calificacion y sus factores 8 al 37 (vacio = 0).
++  - Los factores 34 al 37 solo se guardan si vienen con valor (el HDU no define su regla).
++  - La suma de los factores 8 al 19 no puede superar 1 (misma regla del mantenedor).
++Este modulo no usa la base de datos, asi se puede probar solo.
++"""
++import csv
++import io
++import re
++from dataclasses import dataclass, field
++from datetime import date, datetime
++from decimal import Decimal
++
++import calculo
++
++CABECERA = (
++    "ejercicio", "mercado", "instrumento", "fecha", "secuencia",
++    "numero_dividendo", "tipo_sociedad", "valor_historico",
++) + tuple(f"factor_{columna}" for columna in range(8, 38))
++COLUMNAS_CON_FORMULA = range(8, 34)     # 8 a 33 siempre se guardan (vacio = 0)
++MAXIMO_FILAS = 5000
++SECUENCIA_MINIMA = 10_001               # el flujo ideal pide secuencia mayor que 10.000
++MAXIMO_MONTO = Decimal("9999999999999999.99")
++MAXIMO_DIVIDENDO = 9_999_999_999
++
++
++@dataclass
++class ResultadoCsv:
++    filas: list = field(default_factory=list)     # filas validas: {"linea", "campos", "factores"}
++    errores: list = field(default_factory=list)   # (linea, mensaje)
++    total: int = 0                                # filas de datos leidas
++    error_formato: str = ""                       # problema que impide leer el archivo
++
++    @property
++    def valido(self):
++        return not self.error_formato and not self.errores and self.total > 0
++
++    @property
++    def filas_invalidas(self):
++        return len({linea for linea, _ in self.errores})
++
++    def resumen_error(self, maximo=5):
++        if self.error_formato:
++            return self.error_formato
++        partes = [f"Fila {linea}: {mensaje}" for linea, mensaje in self.errores[:maximo]]
++        if len(self.errores) > maximo:
++            partes.append(f"... y {len(self.errores) - maximo} errores más")
++        return " | ".join(partes)
++
++
++def _numero(texto, nombre, decimales, maximo, decimal_coma):
++    texto = (texto or "").strip()
++    if decimal_coma:
++        texto = texto.replace(",", ".")
++    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", texto):
++        raise ValueError(f"{nombre}: no es un número válido")
++    numero = Decimal(texto)
++    if numero.as_tuple().exponent < -decimales:
++        raise ValueError(f"{nombre}: admite como máximo {decimales} decimales")
++    if numero > maximo:
++        raise ValueError(f"{nombre}: excede el máximo permitido")
++    return numero
++
++
++def _entero(texto, nombre, minimo, maximo):
++    texto = (texto or "").strip()
++    if not re.fullmatch(r"[0-9]+", texto):
++        raise ValueError(f"{nombre}: debe ser un número entero")
++    numero = int(texto)
++    if numero < minimo or numero > maximo:
++        raise ValueError(f"{nombre}: debe estar entre {minimo} y {maximo}")
++    return numero
++
++
++def _fecha(texto):
++    texto = (texto or "").strip()
++    for formato in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
++        try:
++            return datetime.strptime(texto, formato).date()
++        except ValueError:
++            continue
++    raise ValueError("fecha: usa el formato aaaa-mm-dd o dd-mm-aaaa")
++
++
++def validar_fila_csv(fila, decimal_coma=False):
++    """Valida una fila (dict columna -> texto). Devuelve (datos, errores).
++
++    datos = {"campos": {...}, "factores": {8: Decimal, ...}} si no hay errores.
++    """
++    errores = []
++
++    def intentar(funcion, *argumentos):
++        try:
++            return funcion(*argumentos)
++        except ValueError as error:
++            errores.append(str(error))
++            return None
++
++    ejercicio = intentar(_entero, fila.get("ejercicio"), "ejercicio", 1900, 2100)
++    mercado = (fila.get("mercado") or "").strip().upper()
++    if not re.fullmatch(r"[A-Z0-9]{1,3}", mercado):
++        errores.append("mercado: debe tener entre 1 y 3 letras o números")
++    instrumento = (fila.get("instrumento") or "").strip()
++    if not 1 <= len(instrumento) <= 50:
++        errores.append("instrumento: debe tener entre 1 y 50 caracteres")
++    fecha = intentar(_fecha, fila.get("fecha"))
++    secuencia = intentar(_entero, fila.get("secuencia"), "secuencia", SECUENCIA_MINIMA, 9_999_999_999)
++    dividendo = None
++    if (fila.get("numero_dividendo") or "").strip():
++        dividendo = intentar(_entero, fila.get("numero_dividendo"), "numero_dividendo", 0, MAXIMO_DIVIDENDO)
++    tipo = (fila.get("tipo_sociedad") or "").strip().upper() or None
++    if tipo not in (None, "A", "C"):
++        errores.append("tipo_sociedad: debe ser A o C")
++    valor_historico = None
++    if (fila.get("valor_historico") or "").strip():
++        valor_historico = intentar(_numero, fila.get("valor_historico"), "valor_historico", 2, MAXIMO_MONTO, decimal_coma)
++
++    factores = {}
++    for columna in range(8, 38):
++        nombre = f"factor_{columna}"
++        texto = (fila.get(nombre) or "").strip()
++        if not texto:
++            if columna in COLUMNAS_CON_FORMULA:
++                factores[columna] = Decimal("0")
++            continue
++        valor = intentar(_numero, texto, nombre, 8, Decimal(1), decimal_coma)
++        if valor is not None:
++            factores[columna] = valor
++    if not errores:
++        try:
++            calculo.validar_factores(factores)
++        except calculo.ErrorValidacion as error:
++            errores.append(str(error))
++    if errores:
++        return None, errores
++    campos = {
++        "ejercicio": ejercicio, "mercado": mercado, "instrumento": instrumento,
++        "fecha": fecha, "secuencia": secuencia, "numero_dividendo": dividendo,
++        "tipo_sociedad": tipo, "valor_historico": valor_historico,
++    }
++    return {"campos": campos, "factores": factores}, []
++
++
++def leer_csv(texto):
++    """Lee y valida el CSV completo. No toca la base de datos."""
++    resultado = ResultadoCsv()
++    texto = (texto or "").lstrip("\ufeff")
++    primera = next((linea for linea in texto.splitlines() if linea.strip()), "")
++    if not primera:
++        resultado.error_formato = "El archivo está vacío."
++        return resultado
++    delimitador = ";" if primera.count(";") > primera.count(",") else ","
++    lector = csv.reader(io.StringIO(texto, newline=""), delimiter=delimitador)
++    cabecera = None
++    vistas = {}
++    try:
++        for fila in lector:
++            if not fila or all(not celda.strip() for celda in fila):
++                continue
++            linea = lector.line_num
++            if cabecera is None:
++                cabecera = [celda.strip().lower() for celda in fila]
++                faltan = [c for c in CABECERA if c not in cabecera]
++                sobran = [c for c in cabecera if c not in CABECERA]
++                if faltan or sobran or len(set(cabecera)) != len(cabecera):
++                    detalle = []
++                    if faltan:
++                        detalle.append("faltan las columnas " + ", ".join(faltan[:5]) + ("..." if len(faltan) > 5 else ""))
++                    if sobran:
++                        detalle.append("columnas no reconocidas: " + ", ".join(sobran[:5]))
++                    if len(set(cabecera)) != len(cabecera):
++                        detalle.append("hay columnas repetidas")
++                    resultado.error_formato = "Formato incorrecto: " + "; ".join(detalle) + "."
++                    return resultado
++                continue
++            resultado.total += 1
++            if resultado.total > MAXIMO_FILAS:
++                resultado.error_formato = f"El archivo supera el máximo de {MAXIMO_FILAS} filas."
++                return resultado
++            if len(fila) != len(cabecera):
++                resultado.errores.append((linea, f"tiene {len(fila)} columnas y se esperaban {len(cabecera)}"))
++                continue
++            datos, errores = validar_fila_csv(dict(zip(cabecera, fila)), decimal_coma=(delimitador == ";"))
++            for mensaje in errores:
++                resultado.errores.append((linea, mensaje))
++            if datos is None:
++                continue
++            campos = datos["campos"]
++            llave = (campos["ejercicio"], campos["mercado"], campos["instrumento"], campos["secuencia"])
++            if llave in vistas:
++                resultado.errores.append((linea, f"repite la llave de la fila {vistas[llave]} (ejercicio, mercado, instrumento y secuencia)"))
++                continue
++            vistas[llave] = linea
++            datos["linea"] = linea
++            resultado.filas.append(datos)
++    except csv.Error as error:
++        resultado.error_formato = f"El archivo no se pudo leer como CSV: {error}"
++        return resultado
++    if cabecera is None:
++        resultado.error_formato = "El archivo está vacío."
++    elif resultado.total == 0:
++        resultado.error_formato = "El archivo no tiene filas de datos."
++    return resultado
++
++
++def _fila_ejemplo(ejercicio, mercado, instrumento, fecha, secuencia, tipo, factores):
++    valores = {f"factor_{c}": "" for c in range(8, 38)}
++    valores.update({f"factor_{c}": v for c, v in factores.items()})
++    base = [str(ejercicio), mercado, instrumento, fecha, str(secuencia), "", tipo, ""]
++    return base + [valores[f"factor_{c}"] for c in range(8, 38)]
++
++
++def ejemplo_csv(con_error=False):
++    """CSV de ejemplo: el ejemplo resuelto del HDU y dos calificaciones mas."""
++    filas = [
++        _fila_ejemplo(2023, "ACN", "Copec", "2023-12-12", 123123, "A",
++                      {8: "0.52277431", 9: "0.17400052", 10: "0", 11: "0.30322517", 25: "0.19335488", 30: "0.04294924"}),
++        _fila_ejemplo(2024, "ACN", "Cencosud", "2024-06-30", 20001, "A",
++                      {8: "0.7", 9: "0.5"} if con_error else {8: "0.5", 9: "0.5"}),
++        _fila_ejemplo(2024, "ACN", "Falabella", "2024-06-30", 20002, "C",
++                      {8: "0.25", 9: "0.25", 10: "0.25", 11: "0.25"}),
++    ]
++    salida = io.StringIO(newline="")
++    escritor = csv.writer(salida, lineterminator="\n")
++    escritor.writerow(CABECERA)
++    escritor.writerows(filas)
++    return salida.getvalue()
+diff -ruN a/ejemplos/carga_con_error.csv repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/ejemplos/carga_con_error.csv
+--- a/ejemplos/carga_con_error.csv	1970-01-01 00:00:00.000000000 +0000
++++ b/ejemplos/carga_con_error.csv	2026-11-22 06:02:39.671806228 +0000
+@@ -0,0 +1,4 @@
++ejercicio,mercado,instrumento,fecha,secuencia,numero_dividendo,tipo_sociedad,valor_historico,factor_8,factor_9,factor_10,factor_11,factor_12,factor_13,factor_14,factor_15,factor_16,factor_17,factor_18,factor_19,factor_20,factor_21,factor_22,factor_23,factor_24,factor_25,factor_26,factor_27,factor_28,factor_29,factor_30,factor_31,factor_32,factor_33,factor_34,factor_35,factor_36,factor_37
++2023,ACN,Copec,2023-12-12,123123,,A,,0.52277431,0.17400052,0,0.30322517,,,,,,,,,,,,,,0.19335488,,,,,0.04294924,,,,,,,
++2024,ACN,Cencosud,2024-06-30,20001,,A,,0.7,0.5,,,,,,,,,,,,,,,,,,,,,,,,,,,,
++2024,ACN,Falabella,2024-06-30,20002,,C,,0.25,0.25,0.25,0.25,,,,,,,,,,,,,,,,,,,,,,,,,,
+diff -ruN a/ejemplos/carga_formato_incorrecto.csv repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/ejemplos/carga_formato_incorrecto.csv
+--- a/ejemplos/carga_formato_incorrecto.csv	1970-01-01 00:00:00.000000000 +0000
++++ b/ejemplos/carga_formato_incorrecto.csv	2026-11-22 06:02:39.671834692 +0000
+@@ -0,0 +1,2 @@
++ejercicio,mercado,instrumento
++2024,ACN,Copec
+diff -ruN a/ejemplos/carga_valida.csv repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/ejemplos/carga_valida.csv
+--- a/ejemplos/carga_valida.csv	1970-01-01 00:00:00.000000000 +0000
++++ b/ejemplos/carga_valida.csv	2026-11-22 06:02:39.671716925 +0000
+@@ -0,0 +1,4 @@
++ejercicio,mercado,instrumento,fecha,secuencia,numero_dividendo,tipo_sociedad,valor_historico,factor_8,factor_9,factor_10,factor_11,factor_12,factor_13,factor_14,factor_15,factor_16,factor_17,factor_18,factor_19,factor_20,factor_21,factor_22,factor_23,factor_24,factor_25,factor_26,factor_27,factor_28,factor_29,factor_30,factor_31,factor_32,factor_33,factor_34,factor_35,factor_36,factor_37
++2023,ACN,Copec,2023-12-12,123123,,A,,0.52277431,0.17400052,0,0.30322517,,,,,,,,,,,,,,0.19335488,,,,,0.04294924,,,,,,,
++2024,ACN,Cencosud,2024-06-30,20001,,A,,0.5,0.5,,,,,,,,,,,,,,,,,,,,,,,,,,,,
++2024,ACN,Falabella,2024-06-30,20002,,C,,0.25,0.25,0.25,0.25,,,,,,,,,,,,,,,,,,,,,,,,,,
+diff -ruN a/ejemplos/generar_csv_estres.py repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/ejemplos/generar_csv_estres.py
+--- a/ejemplos/generar_csv_estres.py	1970-01-01 00:00:00.000000000 +0000
++++ b/ejemplos/generar_csv_estres.py	2026-11-22 06:02:39.671878577 +0000
+@@ -0,0 +1,18 @@
++"""Genera un CSV de prueba con muchas filas validas (por defecto 1.000) para la prueba de estres.
++
++Uso:  python ejemplos/generar_csv_estres.py 1000 > ejemplos/carga_estres_1000.csv
++"""
++import csv
++import sys
++
++sys.path.insert(0, ".")
++import carga_csv  # noqa: E402
++
++cantidad = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
++escritor = csv.writer(sys.stdout, lineterminator="\n")
++escritor.writerow(carga_csv.CABECERA)
++for n in range(cantidad):
++    fila = {c: "" for c in carga_csv.CABECERA}
++    fila.update(ejercicio="2024", mercado="ACN", instrumento=f"Estres{n:04d}", fecha="2024-06-30",
++                secuencia=str(100000 + n), tipo_sociedad="A", factor_8="0.5", factor_9="0.5")
++    escritor.writerow([fila[c] for c in carga_csv.CABECERA])
+diff -ruN a/static/app.css repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/static/app.css
+--- a/static/app.css	2026-11-17 04:47:41.000000000 +0000
++++ b/static/app.css	2026-11-21 23:28:10.773333014 +0000
+@@ -141,3 +141,9 @@
+   h1 { font-size: 24px; }
+   .panel { padding: 14px; }
+ }
++
++
++/* Navegación por perfil en la barra superior */
++.topnav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0 auto 0 24px; }
++.topnav a { color: inherit; text-decoration: underline; font-weight: 700; font-size: 14px; }
++@media (max-width: 720px) { .topnav { margin: 6px 0 0; order: 3; width: 100%; } }
+diff -ruN a/templates/base.html repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/templates/base.html
+--- a/templates/base.html	2026-11-17 04:47:41.000000000 +0000
++++ b/templates/base.html	2026-11-21 23:28:10.772448977 +0000
+@@ -19,6 +19,15 @@
+       </p>
+     </div>
+     {% if usuario_actual %}
++      <nav class="topnav" aria-label="Secciones">
++        <a href="{{ url_for('calificaciones') }}">Calificaciones</a>
++        {% if usuario_actual.rol == "corredor" %}
++          <a href="{{ url_for('cargar_csv') }}">Carga masiva (CSV)</a>
++        {% endif %}
++        {% if usuario_actual.rol in ("analista", "administrador") %}
++          <a href="{{ url_for('ver_log') }}">Registro de operaciones</a>
++        {% endif %}
++      </nav>
+       <form class="topbar-user" action="{{ url_for('logout') }}" method="post">
+         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+         <button class="button button-inverse button-small" type="submit">Cerrar sesión</button>
+diff -ruN a/templates/calificaciones.html repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/templates/calificaciones.html
+--- a/templates/calificaciones.html	2026-11-17 04:47:41.000000000 +0000
++++ b/templates/calificaciones.html	2026-11-21 23:28:10.772857666 +0000
+@@ -6,17 +6,22 @@
+ {% endblock %}
+ {% block content %}
+ {% set es_corredor = usuario_actual.rol == "corredor" %}
++{% set puede_modificar = usuario_actual.rol in ("corredor", "administrador") %}
+ <section class="page-heading">
+   <div>
+     <h1>Calificaciones</h1>
+     <p class="muted">
+       {% if es_corredor %}Busca, ingresa y administra las calificaciones de tu corredora. Los datos oficiales de Bolsa son de solo lectura.
++      {% elif puede_modificar %}Consulta, ingresa, modifica y elimina las calificaciones de todas las corredoras. Los datos oficiales de Bolsa son de solo lectura.
+       {% else %}Consulta de las calificaciones de todas las corredoras. Tu perfil es de solo lectura.{% endif %}
+     </p>
+   </div>
+-  {% if es_corredor %}
++  {% if puede_modificar %}
+   <a class="button button-primary" href="{{ url_for('nueva_calificacion') }}">+ Ingresar calificación</a>
+   {% endif %}
++  {% if es_corredor %}
++  <a class="button button-secondary" href="{{ url_for('cargar_csv') }}">Carga masiva (CSV)</a>
++  {% endif %}
+ </section>
+ 
+ <section class="panel">
+@@ -116,7 +121,7 @@
+   {% else %}
+     <div class="empty-state">
+       <h3>No hay resultados</h3>
+-      <p class="muted">Prueba otros filtros{% if es_corredor %} o ingresa una calificación nueva{% endif %}.</p>
++      <p class="muted">Prueba otros filtros{% if puede_modificar %} o ingresa una calificación nueva{% endif %}.</p>
+     </div>
+   {% endif %}
+ </section>
+diff -ruN a/templates/cargar-csv.html repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/templates/cargar-csv.html
+--- a/templates/cargar-csv.html	2026-11-17 04:47:41.000000000 +0000
++++ b/templates/cargar-csv.html	1970-01-01 00:00:00.000000000 +0000
+@@ -1,33 +0,0 @@
+-<!DOCTYPE html>
+-<html lang="es">
+-<head>
+-    <meta charset="UTF-8">
+-    <title>Carga Masiva CSV - Calificaciones</title>
+-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+-</head>
+-<body>
+-    <div class="container">
+-        <h2>Cargar Calificaciones via CSV</h2>
+-        
+-        <!-- Mensajes de error o éxito -->
+-        {% with messages = get_flashed_messages(with_categories=true) %}
+-          {% if messages %}
+-            <ul>
+-              {% for category, message in messages %}
+-                <li class="{{ category }}"><strong>{{ category.capitalize() }}:</strong> {{ message }}</li>
+-              {% endfor %}
+-            </ul>
+-          {% endif %}
+-        {% endwith %}
+-
+-        <form action="/cargar_csv" method="POST" enctype="multipart/form-data">
+-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+-            <label for="archivo_csv">Selecciona tu archivo CSV:</label>
+-            <input type="file" name="archivo_csv" accept=".csv" required>
+-            <button type="submit" class="btn-principal">Previsualizar y Cargar</button>
+-        </form>
+-        <br>
+-        <a href="/mantenedor">Volver al mantenedor</a>
+-    </div>
+-</body>
+-</html>
+\ No newline at end of file
+diff -ruN a/templates/cargar_csv.html repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/templates/cargar_csv.html
+--- a/templates/cargar_csv.html	1970-01-01 00:00:00.000000000 +0000
++++ b/templates/cargar_csv.html	2026-11-21 23:28:29.724662881 +0000
+@@ -0,0 +1,104 @@
++{% extends "base.html" %}
++{% block title %}Carga masiva | Mantenedor{% endblock %}
++{% block ruta %}Carga masiva (CSV){% endblock %}
++{% block page_styles %}
++<link rel="stylesheet" href="{{ url_for('static', filename='calificaciones.css') }}">
++{% endblock %}
++{% block content %}
++<section class="page-heading">
++  <div>
++    <h1>Carga masiva (CSV)</h1>
++    <p class="muted">
++      Sube un archivo con calificaciones y factores. Antes de guardar se muestra una previsualización.
++      Si una sola fila es inválida, el archivo se rechaza completo y no se guarda nada.
++    </p>
++  </div>
++  <a class="button button-quiet" href="{{ url_for('calificaciones') }}">Volver al mantenedor</a>
++</section>
++
++<section class="panel">
++  <form action="{{ url_for('cargar_csv') }}" method="post" enctype="multipart/form-data">
++    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
++    <input type="hidden" name="accion" value="previsualizar">
++    <div class="field">
++      <label for="archivo_csv">Archivo CSV (UTF-8)</label>
++      <input id="archivo_csv" name="archivo_csv" type="file" accept=".csv,text/csv" required>
++      <span class="field-help">
++        Separador coma (decimales con punto) o punto y coma (decimales con coma). Máximo 4 MB y 5.000 filas.
++        Si la llave ya existe en tu corredora se actualiza; si no, se agrega.
++        <a href="{{ url_for('ejemplo_csv') }}">Descargar archivo de ejemplo</a>.
++      </span>
++    </div>
++    <button class="button button-primary" type="submit">Previsualizar</button>
++  </form>
++  <details>
++    <summary>Columnas del archivo (hoja 3.1 del HDU)</summary>
++    <p class="muted">
++      ejercicio, mercado, instrumento, fecha (aaaa-mm-dd o dd-mm-aaaa), secuencia (mayor que 10.000),
++      numero_dividendo, tipo_sociedad (A o C), valor_historico y factor_8 a factor_37 (hasta 8 decimales).
++      Los factores vacíos valen 0, la suma de los factores 8 a 19 no puede superar 1 y los factores 34 a 37
++      solo se guardan si traen valor.
++    </p>
++  </details>
++</section>
++
++{% if vista %}
++<section class="panel">
++  <h2>Resultado de «{{ vista.nombre }}»</h2>
++  {% if vista.resultado.error_formato %}
++    <p class="alert alert-error"><strong>Error:</strong> {{ vista.resultado.error_formato }}</p>
++  {% elif vista.errores %}
++    <p class="alert alert-error"><strong>Error:</strong>
++      Se leyeron {{ vista.resultado.total }} filas y {{ vista.resultado.filas_invalidas }} tienen errores.
++      El archivo se rechazó completo y no se guardó nada.</p>
++    <div class="table-scroll">
++      <table class="tabla-tarjetas">
++        <thead><tr><th>Fila del archivo</th><th>Qué corregir</th></tr></thead>
++        <tbody>
++        {% for linea, mensaje in vista.errores %}
++          <tr><td data-label="Fila del archivo">{{ linea }}</td><td data-label="Qué corregir">{{ mensaje }}</td></tr>
++        {% endfor %}
++        </tbody>
++      </table>
++    </div>
++    <p class="field-help">La fila 1 es el encabezado. Se muestran hasta 50 errores.</p>
++  {% else %}
++    <p class="alert alert-ok"><strong>Listo:</strong>
++      {{ vista.resultado.total }} filas válidas: {{ vista.agregan }} se agregan y {{ vista.actualizan }} se actualizan.
++      Todavía no se guardó nada.</p>
++    <div class="table-scroll">
++      <table class="tabla-tarjetas">
++        <thead>
++          <tr>
++            <th>Fila</th><th>Instrumento</th><th>Ejercicio / mercado</th><th>Secuencia</th>
++            <th class="numeric">Suma factores {{ suma_desde }}–{{ suma_hasta }}</th><th>Estado</th><th>Qué pasa al confirmar</th>
++          </tr>
++        </thead>
++        <tbody>
++        {% for fila in vista.filas %}
++          <tr>
++            <td data-label="Fila">{{ fila.linea }}</td>
++            <td data-label="Instrumento"><strong>{{ fila.instrumento }}</strong></td>
++            <td data-label="Ejercicio / mercado">{{ fila.ejercicio }} / {{ fila.mercado }}</td>
++            <td data-label="Secuencia">{{ fila.secuencia }}</td>
++            <td class="numeric" data-label="Suma factores {{ suma_desde }}–{{ suma_hasta }}"><strong>{{ fila.suma|factor }}</strong></td>
++            <td data-label="Estado">OK</td>
++            <td data-label="Qué pasa al confirmar">{{ fila.accion }}</td>
++          </tr>
++        {% endfor %}
++        </tbody>
++      </table>
++    </div>
++    {% if vista.mas_filas %}<p class="field-help">Se muestran las primeras 200 filas; el archivo tiene {{ vista.mas_filas }} más.</p>{% endif %}
++    <form action="{{ url_for('cargar_csv') }}" method="post" class="row-actions">
++      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
++      <input type="hidden" name="accion" value="confirmar">
++      <input type="hidden" name="nombre_archivo" value="{{ vista.nombre }}">
++      <input type="hidden" name="contenido_csv" value="{{ contenido }}">
++      <button class="button button-primary" type="submit">Confirmar carga</button>
++      <a class="button button-quiet" href="{{ url_for('cargar_csv') }}">Cancelar</a>
++    </form>
++  {% endif %}
++</section>
++{% endif %}
++{% endblock %}
+diff -ruN a/templates/formulario.html repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/templates/formulario.html
+--- a/templates/formulario.html	2026-11-17 04:47:41.000000000 +0000
++++ b/templates/formulario.html	2026-11-21 23:28:10.773146330 +0000
+@@ -63,9 +63,20 @@
+                value="{{ estado.campos.valor_historico }}">
+       </div>
+       <div class="field">
+-        <label for="corredora">Corredora</label>
++        <label for="{{ 'id_corredora' if estado.elegir_corredora else 'corredora' }}">Corredora</label>
++        {% if estado.elegir_corredora %}
++        <select id="id_corredora" name="id_corredora" required>
++          <option value="">Elige una corredora</option>
++          {% for corredora in estado.corredoras_opcion %}
++          <option value="{{ corredora.id_corredora }}"
++            {% if estado.id_corredora_sel|string == corredora.id_corredora|string %}selected{% endif %}>{{ corredora.nombre }}</option>
++          {% endfor %}
++        </select>
++        <span class="field-help">La calificación quedará en la corredora que elijas.</span>
++        {% else %}
+         <input id="corredora" value="{{ estado.nombre_corredora or 'Sin corredora asignada' }}" disabled>
+-        <span class="field-help">Se asigna desde el perfil de tu cuenta.</span>
++        <span class="field-help">{% if usuario_actual.rol == "administrador" %}La corredora de una calificación no se puede cambiar.{% else %}Se asigna desde el perfil de tu cuenta.{% endif %}</span>
++        {% endif %}
+       </div>
+     </div>
+   </section>
+diff -ruN a/templates/log.html repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/templates/log.html
+--- a/templates/log.html	1970-01-01 00:00:00.000000000 +0000
++++ b/templates/log.html	2026-11-21 23:28:29.725476292 +0000
+@@ -0,0 +1,55 @@
++{% extends "base.html" %}
++{% block title %}Registro de operaciones | Mantenedor{% endblock %}
++{% block ruta %}Registro de operaciones{% endblock %}
++{% block page_styles %}
++<link rel="stylesheet" href="{{ url_for('static', filename='calificaciones.css') }}">
++{% endblock %}
++{% block content %}
++<section class="page-heading">
++  <div>
++    <h1>Registro de operaciones</h1>
++    <p class="muted">
++      Quién hizo cada operación, qué cambió, cuándo y con qué origen. Es de solo lectura:
++      nadie puede editarlo ni eliminarlo. Se muestran las últimas 200 operaciones.
++    </p>
++  </div>
++  <a class="button button-quiet" href="{{ url_for('calificaciones') }}">Volver al mantenedor</a>
++</section>
++
++<section class="panel">
++  {% if logs %}
++  <div class="table-scroll">
++    <table class="tabla-tarjetas">
++      <thead>
++        <tr><th>Fecha y hora</th><th>Usuario</th><th>Acción</th><th>Tabla / id</th><th>Origen</th><th>Detalle</th></tr>
++      </thead>
++      <tbody>
++      {% for log in logs %}
++        <tr>
++          <td data-label="Fecha y hora">{{ log.fecha_hora|fecha_hora }}</td>
++          <td data-label="Usuario">{{ log.correo or "—" }}</td>
++          <td data-label="Acción"><strong>{{ log.accion }}</strong></td>
++          <td data-label="Tabla / id">{{ log.tabla }} #{{ log.id_registro }}</td>
++          <td data-label="Origen">{{ origenes.get(log.origen, log.origen) }}</td>
++          <td data-label="Detalle">
++            {% if log.datos_antes or log.datos_despues %}
++            <details>
++              <summary>Ver datos</summary>
++              {% if log.datos_antes %}<p class="subline">Antes</p><pre>{{ log.datos_antes|tojson(indent=1) }}</pre>{% endif %}
++              {% if log.datos_despues %}<p class="subline">Después</p><pre>{{ log.datos_despues|tojson(indent=1) }}</pre>{% endif %}
++            </details>
++            {% else %}—{% endif %}
++          </td>
++        </tr>
++      {% endfor %}
++      </tbody>
++    </table>
++  </div>
++  {% else %}
++  <div class="empty-state">
++    <h3>Aún no hay operaciones</h3>
++    <p class="muted">Cuando un usuario ingrese, modifique, elimine o cargue calificaciones, aparecerá aquí.</p>
++  </div>
++  {% endif %}
++</section>
++{% endblock %}
+diff -ruN a/test_app.py repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/test_app.py
+--- a/test_app.py	2026-11-17 04:47:41.000000000 +0000
++++ b/test_app.py	2026-11-22 06:02:54.413489554 +0000
+@@ -211,7 +211,7 @@
+ 
+ 
+ class PruebasSoloLectura(unittest.TestCase):
+-    """Analista y administrador consultan, pero no crean, modifican ni eliminan."""
++    """El analista consulta, pero no crea, modifican ni eliminan."""
+ 
+     def setUp(self):
+         class CursorAnalista(CursorFalso):
+diff -ruN a/test_csv.py repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/test_csv.py
+--- a/test_csv.py	1970-01-01 00:00:00.000000000 +0000
++++ b/test_csv.py	2026-11-22 06:01:39.545895554 +0000
+@@ -0,0 +1,135 @@
++"""Pruebas de la lectura y validacion del CSV de la carga masiva (no usan la base de datos)."""
++import csv
++import io
++from decimal import Decimal as D
++
++import pytest
++
++import carga_csv
++from carga_csv import CABECERA, leer_csv
++
++
++def fila(**cambios):
++    valores = {"ejercicio": "2024", "mercado": "acn", "instrumento": "Prueba", "fecha": "2024-06-30",
++               "secuencia": "20001", "tipo_sociedad": "a", "factor_8": "0.5", "factor_9": "0.5"}
++    valores.update(cambios)
++    return [valores.get(columna, "") for columna in CABECERA]
++
++
++def texto(filas, delimitador=",", cabecera=CABECERA):
++    salida = io.StringIO(newline="")
++    escritor = csv.writer(salida, delimiter=delimitador, lineterminator="\n")
++    escritor.writerow(cabecera)
++    escritor.writerows(filas)
++    return salida.getvalue()
++
++
++def test_ejemplo_del_sistema_es_valido():
++    resultado = leer_csv(carga_csv.ejemplo_csv())
++    assert resultado.valido and resultado.total == 3
++    copec = resultado.filas[0]
++    assert copec["factores"][8] == D("0.52277431") and copec["factores"][25] == D("0.19335488")
++
++
++def test_ejemplo_con_error_se_rechaza_y_dice_la_fila():
++    resultado = leer_csv(carga_csv.ejemplo_csv(con_error=True))
++    assert not resultado.valido and resultado.filas_invalidas == 1
++    assert resultado.errores[0][0] == 3 and "supera 1" in resultado.errores[0][1]
++
++
++def test_se_normalizan_mercado_y_tipo_de_sociedad():
++    campos = leer_csv(texto([fila()])).filas[0]["campos"]
++    assert campos["mercado"] == "ACN" and campos["tipo_sociedad"] == "A"
++
++
++def test_suma_exactamente_uno_pasa_y_uno_con_un_decimal_mas_no():
++    assert leer_csv(texto([fila(factor_8="0.50000000", factor_9="0.50000000")])).valido
++    resultado = leer_csv(texto([fila(factor_8="0.50000000", factor_9="0.50000001")]))
++    assert not resultado.valido and "supera 1" in resultado.errores[0][1]
++
++
++@pytest.mark.parametrize("cambios, parte", [
++    ({"factor_8": "1.5"}, "máximo"),
++    ({"factor_8": "-0.2"}, "número válido"),
++    ({"factor_8": "abc"}, "número válido"),
++    ({"factor_8": "0.123456789"}, "8 decimales"),
++    ({"secuencia": "10000"}, "entre 10001"),
++    ({"secuencia": "abc"}, "entero"),
++    ({"ejercicio": "1800"}, "entre 1900"),
++    ({"mercado": "ABCD"}, "mercado"),
++    ({"mercado": ""}, "mercado"),
++    ({"instrumento": ""}, "instrumento"),
++    ({"instrumento": "x" * 51}, "instrumento"),
++    ({"fecha": "30/13/2024"}, "fecha"),
++    ({"tipo_sociedad": "Z"}, "tipo_sociedad"),
++    ({"valor_historico": "1.234"}, "decimales"),
++    ({"numero_dividendo": "-1"}, "entero"),
++])
++def test_cada_regla_rechaza_su_caso(cambios, parte):
++    resultado = leer_csv(texto([fila(**cambios)]))
++    assert not resultado.valido
++    assert any(parte in mensaje for _, mensaje in resultado.errores)
++
++
++@pytest.mark.parametrize("fecha", ["2024-06-30", "30-06-2024", "30/06/2024"])
++def test_formatos_de_fecha_aceptados(fecha):
++    assert leer_csv(texto([fila(fecha=fecha)])).filas[0]["campos"]["fecha"].isoformat() == "2024-06-30"
++
++
++def test_factores_34_a_37_solo_se_guardan_si_traen_valor():
++    sin = leer_csv(texto([fila()])).filas[0]["factores"]
++    con = leer_csv(texto([fila(factor_34="0.4", factor_37="0.1")])).filas[0]["factores"]
++    assert all(c not in sin for c in range(34, 38)) and all(c in sin for c in range(8, 34))
++    assert con[34] == D("0.4") and con[37] == D("0.1") and 35 not in con
++
++
++def test_los_factores_fuera_del_rango_de_la_suma_no_la_afectan():
++    # 20 a 33 son creditos: pueden sumar mas que 1 sin romper la regla (solo cuenta 8 a 19)
++    assert leer_csv(texto([fila(factor_20="0.9", factor_21="0.9")])).valido
++
++
++def test_punto_y_coma_con_decimal_coma():
++    resultado = leer_csv(texto([fila(factor_8="0,25", factor_9="0,75")], delimitador=";"))
++    assert resultado.valido and resultado.filas[0]["factores"][8] == D("0.25")
++
++
++def test_con_coma_como_separador_no_se_acepta_decimal_coma():
++    assert not leer_csv(texto([fila(factor_8='"0,5"', factor_9="0.5")])).valido
++
++
++def test_bom_y_filas_vacias_se_ignoran():
++    contenido = "\ufeff" + texto([fila(), [""] * len(CABECERA), fila(instrumento="Otra", secuencia="20002")])
++    resultado = leer_csv(contenido)
++    assert resultado.valido and resultado.total == 2
++
++
++def test_llave_repetida_en_el_archivo_se_rechaza():
++    resultado = leer_csv(texto([fila(), fila()]))
++    assert not resultado.valido and "repite la llave" in resultado.errores[0][1]
++
++
++def test_columnas_faltantes_sobrantes_o_repetidas():
++    assert "faltan" in leer_csv("ejercicio,mercado\n2024,ACN").error_formato
++    assert "no reconocidas" in leer_csv(texto([fila() + ["x"]], cabecera=list(CABECERA) + ["extra"])).error_formato
++    assert "repetidas" in leer_csv(texto([fila() + ["0"]], cabecera=list(CABECERA) + ["factor_8"])).error_formato
++
++
++def test_fila_con_columnas_de_menos():
++    resultado = leer_csv(texto([fila()[:-3]]))
++    assert not resultado.valido and "columnas" in resultado.errores[0][1]
++
++
++def test_archivo_vacio_o_solo_encabezado():
++    assert leer_csv("").error_formato and leer_csv("  \n \n").error_formato
++    assert "no tiene filas" in leer_csv(texto([])).error_formato
++
++
++def test_maximo_de_filas():
++    filas = [fila(instrumento=f"I{n}", secuencia=str(20000 + n)) for n in range(carga_csv.MAXIMO_FILAS + 1)]
++    assert "máximo" in leer_csv(texto(filas)).error_formato
++
++
++def test_una_fila_invalida_basta_para_rechazar_todo():
++    resultado = leer_csv(texto([fila(), fila(instrumento="Mala", secuencia="20002", factor_8="2"), fila(instrumento="Buena", secuencia="20003")]))
++    assert not resultado.valido and resultado.filas_invalidas == 1 and len(resultado.filas) == 2
++    assert "Fila 3" in resultado.resumen_error()
+diff -ruN a/test_integracion_pg.py repo/Ev_Sumativa_03_PI-main/Ev_Sumativa_03_PI-main/test_integracion_pg.py
+--- a/test_integracion_pg.py	2026-11-17 04:47:41.000000000 +0000
++++ b/test_integracion_pg.py	2026-11-22 06:00:45.049917678 +0000
+@@ -14,11 +14,14 @@
+ """
+ import os
+ from pathlib import Path
++import io
+ import re
++import time
+ 
+ import psycopg
+ import pytest
+ 
++import carga_csv
+ from app import create_app
+ from seguridad import MAX_INTENTOS_FALLIDOS, hash_clave
+ 
+@@ -274,9 +277,8 @@
+     assert "Predomina" not in otra and "Oficial" in otra    # el otro corredor sigue viendo la oficial
+ 
+ 
+-@pytest.mark.parametrize("correo", ["analista@nuam.cl", "admin@nuam.cl"])
+-def test_analista_y_administrador_son_de_solo_lectura(app, correo):
+-    cliente, token, _ = entrar(app, correo)
++def test_analista_es_de_solo_lectura(app):
++    cliente, token, _ = entrar(app, "analista@nuam.cl")
+     grilla = cliente.get("/calificaciones").text
+     assert "Copec" in grilla and "Oficial Bolsa" in grilla    # consultan todas las corredoras
+     id_copec = consultar("SELECT id_calificacion FROM calificacion WHERE instrumento = 'Copec'")[0][0]
+@@ -332,3 +334,190 @@
+     for sql in ("UPDATE log_operacion SET accion = 'crear'", "DELETE FROM log_operacion"):
+         with pytest.raises(psycopg.errors.InsufficientPrivilege):
+             consultar(sql + " RETURNING 1")
++
++
++
++# ---------------------------------------------------------------- administrador
++def id_corredora(nombre):
++    return consultar("SELECT id_corredora FROM corredora WHERE nombre = %s", (nombre,))[0][0]
++
++
++def test_administrador_crea_modifica_y_elimina_en_cualquier_corredora(app):
++    cliente, token, _ = entrar(app, "admin@nuam.cl")
++    pantalla = cliente.get("/calificaciones/nueva")
++    assert pantalla.status_code == 200 and 'name="id_corredora"' in pantalla.text
++    destino = id_corredora("Corredora Dos")
++    formulario = calcular(cliente, datos(token, 40001, instrumento="Creada por admin", id_corredora=str(destino)))
++    assert grabar(cliente, formulario).status_code == 302
++    id_nueva = id_de(40001)
++    assert consultar("SELECT id_corredora, origen FROM calificacion WHERE id_calificacion = %s", (id_nueva,)) == [(destino, "manual")]
++    # modificar: cambia el monto de la columna 9 y vuelve a calcular
++    ruta = f"/calificaciones/{id_nueva}/editar"
++    nuevos = {**MONTOS_HDU, 9: "100000000"}
++    editado = calcular(cliente, datos(token, 40001, montos=nuevos, instrumento="Creada por admin"), ruta=ruta)
++    assert grabar(cliente, editado, ruta=ruta).status_code == 302
++    (factor_9,), = consultar("SELECT valor FROM factor_calificacion WHERE id_calificacion = %s AND numero_factor = 9", (id_nueva,))
++    assert str(factor_9) != FACTORES_HDU[9]
++    assert consultar("SELECT 1 FROM log_operacion WHERE accion = 'modificar' AND id_registro = %s", (id_nueva,))
++    # eliminar con confirmacion
++    assert cliente.get(f"/calificaciones/{id_nueva}/eliminar").status_code == 200
++    assert cliente.post(f"/calificaciones/{id_nueva}/eliminar", data={"csrf_token": token}).status_code == 302
++    assert not consultar("SELECT 1 FROM calificacion WHERE id_calificacion = %s", (id_nueva,))
++    acciones = [a for (a,) in consultar("SELECT accion FROM log_operacion WHERE id_registro = %s ORDER BY id_log", (id_nueva,))]
++    assert acciones == ["crear", "modificar", "eliminar"]
++    (usuario_log,), = consultar("SELECT u.rol FROM log_operacion l JOIN usuario u USING (id_usuario) WHERE l.id_registro = %s LIMIT 1", (id_nueva,))
++    assert usuario_log == "administrador"
++
++
++def test_administrador_no_ingresa_en_la_bolsa_ni_sin_corredora(app):
++    cliente, token, _ = entrar(app, "admin@nuam.cl")
++    antes = consultar("SELECT count(*) FROM calificacion")[0][0]
++    en_bolsa = calcular(cliente, datos(token, 40002, id_corredora=str(id_corredora("Bolsa"))))
++    assert grabar(cliente, en_bolsa).status_code == 400
++    sin_corredora = calcular(cliente, datos(token, 40003))
++    assert grabar(cliente, sin_corredora).status_code == 400
++    assert consultar("SELECT count(*) FROM calificacion")[0][0] == antes
++
++
++def test_administrador_no_modifica_ni_elimina_lo_oficial(app):
++    cliente, token, _ = entrar(app, "admin@nuam.cl")
++    oficial = app.id_oficial
++    assert not cliente.get(f"/calificaciones/{oficial}").text.count("Eliminar")
++    assert cliente.post(f"/calificaciones/{oficial}/eliminar", data={"csrf_token": token}).status_code == 302
++    assert cliente.post(f"/calificaciones/{oficial}/editar", data={"csrf_token": token}).status_code in (302, 400)
++    assert consultar("SELECT instrumento FROM calificacion WHERE id_calificacion = %s", (oficial,)) == [("Oficial Bolsa",)]
++
++
++# ---------------------------------------------------------------- registro de operaciones (log)
++def test_log_lo_consultan_analista_y_administrador_y_no_el_corredor(app):
++    assert entrar(app, "corredor1@demo.cl")[0].get("/log").status_code == 403
++    for correo in ("analista@nuam.cl", "admin@nuam.cl"):
++        pagina = entrar(app, correo)[0].get("/log")
++        assert pagina.status_code == 200 and "Registro de operaciones" in pagina.text
++    cliente, token, _ = entrar(app, "admin@nuam.cl")
++    assert "crear" in cliente.get("/log").text      # aparecen las operaciones hechas arriba
++    assert cliente.post("/log", data={"csrf_token": token}).status_code == 405   # solo se consulta
++
++
++def test_menu_segun_el_perfil(app):
++    corredor = entrar(app, "corredor1@demo.cl")[0].get("/calificaciones").text
++    assert "Carga masiva (CSV)" in corredor and "Registro de operaciones" not in corredor
++    for correo in ("analista@nuam.cl", "admin@nuam.cl"):
++        pagina = entrar(app, correo)[0].get("/calificaciones").text
++        assert "Registro de operaciones" in pagina and "Carga masiva (CSV)" not in pagina
++
++
++# ---------------------------------------------------------------- carga masiva CSV
++RUTA_CSV = "/calificaciones/cargar-csv"
++
++
++def fila_csv(instrumento, secuencia, f8="0.5", f9="0.5", fecha="2024-06-30", extra=None):
++    valores = {"ejercicio": "2024", "mercado": "ACN", "instrumento": instrumento, "fecha": fecha,
++               "secuencia": str(secuencia), "tipo_sociedad": "A", "factor_8": f8, "factor_9": f9}
++    valores.update(extra or {})
++    return [valores.get(columna, "") for columna in carga_csv.CABECERA]
++
++
++def texto_csv(filas, delimitador=","):
++    salida = io.StringIO(newline="")
++    escritor = __import__("csv").writer(salida, delimiter=delimitador, lineterminator="\n")
++    escritor.writerow(carga_csv.CABECERA)
++    escritor.writerows(filas)
++    return salida.getvalue()
++
++
++def subir(cliente, token, texto, nombre="carga.csv"):
++    return cliente.post(RUTA_CSV, data={"csrf_token": token, "accion": "previsualizar",
++                                        "archivo_csv": (io.BytesIO(texto.encode("utf-8")), nombre)})
++
++
++def confirmar(cliente, token, texto, nombre="carga.csv"):
++    return cliente.post(RUTA_CSV, data={"csrf_token": token, "accion": "confirmar",
++                                        "nombre_archivo": nombre, "contenido_csv": texto})
++
++
++def test_csv_valido_se_previsualiza_y_al_confirmar_agrega_y_actualiza(app):
++    cliente, token, _ = entrar(app, "corredor1@demo.cl")
++    texto = carga_csv.ejemplo_csv()          # Copec ya existe en la corredora; Cencosud y Falabella son nuevas
++    vista = subir(cliente, token, texto)
++    assert vista.status_code == 200 and "Confirmar carga" in vista.text
++    assert "Actualiza" in vista.text and "Agrega" in vista.text
++    assert not consultar("SELECT 1 FROM calificacion WHERE instrumento = 'Cencosud'"), "la previsualizacion no guarda nada"
++    assert confirmar(cliente, token, texto, "ejemplo.csv").status_code == 302
++    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento IN ('Cencosud', 'Falabella') AND origen = 'carga_masiva'")) == 2
++    (origen,), = consultar("SELECT origen FROM calificacion WHERE instrumento = 'Copec' AND id_corredora = %s", (id_corredora("Corredora Demo"),))
++    assert origen == "carga_masiva"                                         # se actualizo, no se duplico
++    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento = 'Copec' AND id_corredora = %s", (id_corredora("Corredora Demo"),))) == 1
++    (factor_8,), = consultar("""SELECT f.valor FROM factor_calificacion f JOIN calificacion c USING (id_calificacion)
++                                WHERE c.instrumento = 'Copec' AND f.numero_factor = 8""")
++    assert str(factor_8) == FACTORES_HDU[8]
++    assert consultar("SELECT estado, total_filas, filas_invalidas FROM carga_archivo WHERE nombre_archivo = 'ejemplo.csv'") == [("confirmado", 3, 0)]
++    (despues,), = consultar("SELECT datos_despues FROM log_operacion WHERE accion = 'carga_masiva' ORDER BY id_log DESC LIMIT 1")
++    assert despues["agregadas"] == 2 and despues["actualizadas"] == 1
++
++
++def test_csv_con_una_fila_invalida_se_rechaza_completo(app):
++    cliente, token, _ = entrar(app, "corredor1@demo.cl")
++    texto = texto_csv([fila_csv("RechazoA", 41001), fila_csv("RechazoB", 41002, f8="0.7", f9="0.5"), fila_csv("RechazoC", 41003)])
++    respuesta = subir(cliente, token, texto, "con_error.csv")
++    assert respuesta.status_code == 400 and "rechazó completo" in respuesta.text and "supera 1" in respuesta.text
++    assert "Fila del archivo" in respuesta.text and ">3<" in respuesta.text.replace(" ", "")     # indica la fila con el error
++    assert confirmar(cliente, token, texto, "con_error.csv").status_code == 400       # tampoco se puede forzar al confirmar
++    assert not consultar("SELECT 1 FROM calificacion WHERE instrumento ~ '^Rechazo'")
++    estado, invalidas, detalle = consultar("SELECT estado, filas_invalidas, detalle_error FROM carga_archivo WHERE nombre_archivo = 'con_error.csv' ORDER BY id_carga LIMIT 1")[0]
++    assert estado == "rechazado" and invalidas == 1 and "supera 1" in detalle
++    # una vez corregido, el mismo archivo se acepta
++    corregido = texto_csv([fila_csv("RechazoA", 41001), fila_csv("RechazoB", 41002), fila_csv("RechazoC", 41003)])
++    assert subir(cliente, token, corregido, "corregido.csv").status_code == 200
++    assert confirmar(cliente, token, corregido, "corregido.csv").status_code == 302
++    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento ~ '^Rechazo'")) == 3
++
++
++def test_csv_con_formato_incorrecto(app):
++    cliente, token, _ = entrar(app, "corredor1@demo.cl")
++    assert subir(cliente, token, "a,b\n1,2", "datos.txt").status_code == 400                    # no es .csv
++    respuesta = subir(cliente, token, "ejercicio,mercado\n2024,ACN", "corto.csv")
++    assert respuesta.status_code == 400 and "Formato incorrecto" in respuesta.text
++    assert subir(cliente, token, "", "vacio.csv").status_code == 400
++    assert cliente.post(RUTA_CSV, data={"csrf_token": token, "accion": "otra"}).status_code == 400
++
++
++def test_csv_punto_y_coma_con_decimal_coma(app):
++    cliente, token, _ = entrar(app, "corredor1@demo.cl")
++    texto = texto_csv([fila_csv("ComaDecimal", 42001, f8="0,25", f9="0,75")], delimitador=";")
++    assert confirmar(cliente, token, texto).status_code == 302
++    (factor,), = consultar("SELECT f.valor FROM factor_calificacion f JOIN calificacion c USING (id_calificacion) WHERE c.instrumento = 'ComaDecimal' AND f.numero_factor = 8")
++    assert str(factor) == "0.25000000"
++
++
++def test_csv_es_local_de_cada_corredora(app):
++    cliente, token, _ = entrar(app, "corredor2@demo.cl")
++    texto = texto_csv([fila_csv("Copec", 123123, extra={"ejercicio": "2023", "fecha": "2023-12-12"})])
++    assert "Agrega" in subir(cliente, token, texto).text          # para la otra corredora es una calificacion nueva
++    assert confirmar(cliente, token, texto).status_code == 302
++    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento = 'Copec' AND secuencia = 123123")) == 2
++
++
++def test_csv_solo_lo_carga_el_corredor(app):
++    for correo in ("analista@nuam.cl", "admin@nuam.cl"):
++        cliente, token, _ = entrar(app, correo)
++        assert cliente.get(RUTA_CSV).status_code == 403
++        assert subir(cliente, token, carga_csv.ejemplo_csv()).status_code == 403
++    assert entrar(app, "corredor1@demo.cl")[0].get(RUTA_CSV).status_code == 200
++    assert entrar(app, "corredor1@demo.cl")[0].get(RUTA_CSV + "/ejemplo").status_code == 200
++
++
++def test_csv_sin_token_csrf_se_rechaza(app):
++    cliente, _, _ = entrar(app, "corredor1@demo.cl")
++    respuesta = cliente.post(RUTA_CSV, data={"accion": "confirmar", "contenido_csv": carga_csv.ejemplo_csv()})
++    assert respuesta.status_code in (400, 403)
++
++
++def test_csv_de_1000_filas_se_procesa_en_menos_de_10_segundos(app):
++    cliente, token, _ = entrar(app, "corredor1@demo.cl")
++    texto = texto_csv([fila_csv(f"Estres{n:04d}", 100000 + n) for n in range(1000)])
++    inicio = time.perf_counter()
++    assert subir(cliente, token, texto, "estres.csv").status_code == 200
++    assert confirmar(cliente, token, texto, "estres.csv").status_code == 302
++    assert time.perf_counter() - inicio < 10
++    assert consultar("SELECT count(*) FROM calificacion WHERE instrumento ~ '^Estres'")[0][0] == 1000

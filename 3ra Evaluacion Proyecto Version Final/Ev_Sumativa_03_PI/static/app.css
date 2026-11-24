@@ -1,0 +1,149 @@
+/* Guía de estilo del grupo (informe ES2, 4.3.4), ampliada para todas las pantallas.
+   Base blanco y negro con un solo color de acento:
+     texto y bordes  #1A1A1A      fondo         #FFFFFF
+     acento          #C8102E      fila alterna  #F2F2F2
+   El rojo se usa en el botón principal y en los errores. Los errores siempre
+   llevan texto ("Error:"), no solo color. Tipografía sans-serif: Arial. */
+:root {
+  color-scheme: light;
+  --color-texto: #1a1a1a;
+  --color-fondo: #ffffff;
+  --color-acento: #c8102e;
+  --color-alterno: #f2f2f2;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--color-texto);
+  background: var(--color-fondo);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  display: grid;
+  /* minmax(0, 1fr): impide que una tabla ancha estire la página en celular */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  background: var(--color-fondo);
+}
+
+a { color: var(--color-texto); }
+a:hover { text-decoration-thickness: 2px; }
+button, input, select { font: inherit; }
+:focus-visible { outline: 3px solid var(--color-texto); outline-offset: 2px; }
+
+/* Barra superior: nombre del sistema y ruta (perfil > sección) */
+.topbar {
+  padding: 12px max(20px, calc((100% - 1180px) / 2));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--color-texto);
+  color: var(--color-fondo);
+}
+.topbar a { color: var(--color-fondo); }
+.topbar :focus-visible { outline-color: var(--color-fondo); }
+.topbar-brand { min-width: 0; }
+.brand { font-size: 18px; font-weight: 700; text-decoration: none; }
+.brand:hover { text-decoration: underline; }
+.ruta { margin: 2px 0 0; font-size: 14px; }
+.ruta-perfil { font-weight: 700; }
+.topbar-user { margin: 0; flex: none; }
+
+.page { width: min(1180px, 100% - 40px); margin: 0 auto; padding: 28px 0 44px; }
+.footer { padding: 16px; border-top: 1px solid var(--color-texto); font-size: 13px; font-style: italic; text-align: center; }
+
+/* Títulos y encabezados de tabla en negrita */
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: 8px; font-size: 28px; font-weight: 700; line-height: 1.2; }
+h2 { margin-bottom: 12px; font-size: 20px; font-weight: 700; }
+h3 { margin-bottom: 6px; font-size: 17px; font-weight: 700; }
+
+/* Texto de apoyo y mensajes de error en cursiva */
+.muted, .field-help, .subline { font-style: italic; }
+.muted { margin-bottom: 0; font-size: 15px; }
+.field-help, .subline { font-size: 13px; }
+.subline { display: block; margin-top: 2px; }
+.text-danger { color: var(--color-acento); font-style: italic; }
+
+.panel {
+  margin-bottom: 20px;
+  padding: 20px;
+  border: 1px solid var(--color-texto);
+  background: var(--color-fondo);
+}
+.page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+
+/* Campos de formulario */
+.field { display: grid; gap: 6px; min-width: 0; align-content: start; }
+.field label { font-size: 14px; font-weight: 700; }
+.field input, .field select {
+  width: 100%; min-height: 44px; padding: 8px 10px;
+  border: 1px solid var(--color-texto); border-radius: 0;
+  background: var(--color-fondo); color: var(--color-texto);
+}
+.field input:disabled { background: var(--color-alterno); font-style: italic; }
+
+/* Botones: principal (rojo), secundario (negro) y terciario (borde negro) */
+.button {
+  min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
+  gap: 8px; padding: 0 18px; border: 2px solid var(--color-texto); border-radius: 0;
+  background: var(--color-fondo); color: var(--color-texto);
+  cursor: pointer; font-size: 15px; font-weight: 700; text-decoration: none; white-space: nowrap;
+}
+.button:hover { background: var(--color-alterno); }
+.button-primary { border-color: var(--color-acento); background: var(--color-acento); color: var(--color-fondo); }
+.button-primary:hover { border-color: var(--color-texto); background: var(--color-texto); }
+.button-secondary { background: var(--color-texto); color: var(--color-fondo); }
+.button-secondary:hover { background: var(--color-fondo); color: var(--color-texto); }
+.button-danger { border-color: var(--color-acento); color: var(--color-acento); }
+.button-danger:hover { background: var(--color-acento); color: var(--color-fondo); }
+.button-inverse { border-color: var(--color-fondo); background: var(--color-texto); color: var(--color-fondo); }
+.button-inverse:hover { background: var(--color-fondo); color: var(--color-texto); }
+.button[disabled], .button[aria-disabled="true"] { border-style: dashed; opacity: .55; cursor: not-allowed; }
+.button-wide { width: 100%; }
+.button-small { min-height: 36px; padding: 0 12px; font-size: 14px; }
+
+/* Mensajes: siempre con texto ("Error:", "Listo:", "Aviso:") además del color */
+.alerts { display: grid; gap: 8px; margin-bottom: 18px; }
+.alert { margin: 0; padding: 10px 14px; border: 2px solid var(--color-texto); background: var(--color-alterno); font-size: 15px; }
+.alert-error { border-color: var(--color-acento); background: var(--color-fondo); color: var(--color-acento); font-style: italic; }
+.alert-aviso { border-style: dashed; }
+
+/* Etiquetas */
+.badge {
+  display: inline-block; padding: 1px 8px; border: 1px solid var(--color-texto);
+  font-size: 12px; font-weight: 700; white-space: nowrap;
+}
+.badge-official { background: var(--color-texto); color: var(--color-fondo); }
+.badge-manual { border-style: dashed; }
+
+/* Tablas: encabezado en negrita y filas alternas en gris */
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; text-align: left; }
+th, td { padding: 10px 12px; vertical-align: middle; font-size: 15px; }
+thead th { border-bottom: 2px solid var(--color-texto); font-weight: 700; }
+tbody tr:nth-child(even) { background: var(--color-alterno); }
+td strong { font-weight: 700; }
+.numeric { font-variant-numeric: tabular-nums; text-align: right; }
+.row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+
+@media (max-width: 760px) {
+  .page { width: min(100% - 24px, 1180px); padding-top: 20px; }
+  .topbar { padding: 10px 12px; }
+  .brand { font-size: 16px; }
+  .ruta { font-size: 13px; }
+  .page-heading { align-items: flex-start; flex-direction: column; }
+  h1 { font-size: 24px; }
+  .panel { padding: 14px; }
+}
+
+
+/* Navegación por perfil en la barra superior */
+.topnav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0 auto 0 24px; }
+.topnav a { color: inherit; text-decoration: underline; font-weight: 700; font-size: 14px; }
+@media (max-width: 720px) { .topnav { margin: 6px 0 0; order: 3; width: 100%; } }

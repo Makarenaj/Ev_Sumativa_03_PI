@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ titulo }} | Mantenedor{% endblock %}
+{% block ruta %}<a href="{{ url_for('calificaciones') }}">Calificaciones</a> &gt; {{ "Modificar" if id_calificacion else "Ingresar" }}{% endblock %}
+{% block page_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='formulario.css') }}">
+{% endblock %}
+{% block content %}
+{% set accion_url = url_for('editar_calificacion', id_calificacion=id_calificacion) if id_calificacion else url_for('nueva_calificacion') %}
+<section class="page-heading">
+  <div>
+    <h1>{{ titulo }}</h1>
+    <p class="muted">Completa los datos, ingresa los montos y presiona Calcular. Revisa la suma y los factores antes de grabar: nada se guarda hasta presionar Grabar.</p>
+  </div>
+</section>
+
+<form class="workflow-form" method="post" action="{{ accion_url }}" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="firma_montos" id="firma-montos" value="{{ estado.firma }}">
+  <section class="panel">
+    <h2>1. Datos de la calificación</h2>
+    <div class="form-grid">
+      <div class="field">
+        <label for="ejercicio">Ejercicio *</label>
+        <input id="ejercicio" name="ejercicio" type="number" min="1900" max="2100" required
+               value="{{ estado.campos.ejercicio }}">
+      </div>
+      <div class="field">
+        <label for="mercado">Mercado *</label>
+        <input id="mercado" name="mercado" maxlength="3" required
+               value="{{ estado.campos.mercado }}" placeholder="ACN">
+      </div>
+      <div class="field field-span-2">
+        <label for="instrumento">Instrumento *</label>
+        <input id="instrumento" name="instrumento" maxlength="50" required
+               value="{{ estado.campos.instrumento }}" placeholder="Nombre del instrumento">
+      </div>
+      <div class="field">
+        <label for="fecha">Fecha *</label>
+        <input id="fecha" name="fecha" type="date" required value="{{ estado.campos.fecha }}">
+      </div>
+      <div class="field">
+        <label for="secuencia">Secuencia *</label>
+        <input id="secuencia" name="secuencia" type="number" min="10001" required
+               value="{{ estado.campos.secuencia }}">
+        <span class="field-help">Debe ser mayor que 10.000.</span>
+      </div>
+      <div class="field">
+        <label for="numero_dividendo">Número de dividendo</label>
+        <input id="numero_dividendo" name="numero_dividendo" type="number" min="0"
+               value="{{ estado.campos.numero_dividendo }}">
+      </div>
+      <div class="field">
+        <label for="tipo_sociedad">Tipo de sociedad</label>
+        <select id="tipo_sociedad" name="tipo_sociedad">
+          <option value="">Sin especificar</option>
+          <option value="A" {% if estado.campos.tipo_sociedad == "A" %}selected{% endif %}>A</option>
+          <option value="C" {% if estado.campos.tipo_sociedad == "C" %}selected{% endif %}>C</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="valor_historico">Valor histórico</label>
+        <input id="valor_historico" name="valor_historico" type="number" min="0" step="0.01"
+               value="{{ estado.campos.valor_historico }}">
+      </div>
+      <div class="field">
+        <label for="{{ 'id_corredora' if estado.elegir_corredora else 'corredora' }}">Corredora</label>
+        {% if estado.elegir_corredora %}
+        <select id="id_corredora" name="id_corredora" required>
+          <option value="">Elige una corredora</option>
+          {% for corredora in estado.corredoras_opcion %}
+          <option value="{{ corredora.id_corredora }}"
+            {% if estado.id_corredora_sel|string == corredora.id_corredora|string %}selected{% endif %}>{{ corredora.nombre }}</option>
+          {% endfor %}
+        </select>
+        <span class="field-help">La calificación quedará en la corredora que elijas.</span>
+        {% else %}
+        <input id="corredora" value="{{ estado.nombre_corredora or 'Sin corredora asignada' }}" disabled>
+        <span class="field-help">{% if usuario_actual.rol == "administrador" %}La corredora de una calificación no se puede cambiar.{% else %}Se asigna desde el perfil de tu cuenta.{% endif %}</span>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="montos">
+    <h2>2. Montos y factores</h2>
+    <p class="muted">Factor = monto ÷ suma de los montos {{ suma_desde }} a {{ suma_hasta }}, con 8 decimales. Los factores 8 a 33 se calculan y se pueden editar antes de grabar. Los factores 34 a 37 se ingresan a mano.</p>
+    <div class="summary-grid" aria-live="polite">
+      <div class="summary-card">
+        <span>Suma de montos (columnas {{ suma_desde }}–{{ suma_hasta }})</span>
+        <strong id="suma-montos">{{ estado.suma_montos }}</strong>
+      </div>
+      <div class="summary-card {% if estado.estado == 'excede' %}summary-error{% endif %}" id="tarjeta-suma-factores">
+        <span>Suma de factores (columnas {{ suma_desde }}–{{ suma_hasta }})</span>
+        <strong id="suma-factores">{{ estado.suma_factores }}</strong>
+        <em id="estado-suma">{% if estado.estado == 'excede' %}Supera 1: no se puede grabar.{% elif estado.estado == 'ok' %}Cumple: no supera 1.{% else %}Aún sin calcular.{% endif %}</em>
+      </div>
+    </div>
+    <p class="calculation-message" id="calculation-message" role="status">{{ estado.mensaje }}</p>
+    <div class="table-scroll detail-table">
+      <table>
+        <thead>
+          <tr><th>Columna</th><th>Monto</th><th>Factor</th><th class="col-tipo">Tipo</th></tr>
+        </thead>
+        <tbody>
+        {% for columna in range(8, 38) %}
+          <tr>
+            <th scope="row">{{ columna }}</th>
+            <td>
+              <input class="amount-input numeric" data-monto="{{ columna }}"
+                     name="monto_{{ columna }}" type="number" min="0" step="0.01"
+                     value="{{ estado.montos[columna] }}" aria-label="Monto columna {{ columna }}">
+            </td>
+            <td>
+              <input class="factor-input numeric" data-factor="{{ columna }}"
+                     {% if columna >= 34 %}data-factor-manual="{{ columna }}"{% endif %}
+                     name="factor_{{ columna }}" type="text" inputmode="decimal" maxlength="12"
+                     autocomplete="off" value="{{ estado.factores[columna] }}"
+                     aria-label="Factor {{ columna }}{% if columna >= 34 %} (manual){% endif %}">
+            </td>
+            <td class="col-tipo">
+              {% if columna <= suma_hasta %}
+                <span class="badge badge-base">En suma</span>
+              {% elif columna <= 33 %}
+                <span class="badge">Calculado</span>
+              {% else %}
+                <span class="badge badge-manual">Manual</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="form-actions">
+    <a class="button button-quiet" href="{{ url_for('calificaciones') }}">Cancelar</a>
+    <button class="button button-secondary" type="submit" name="accion" value="calcular"
+            formaction="{{ accion_url }}#montos" id="boton-calcular">Calcular</button>
+    <button class="button button-primary" type="submit" name="accion" value="grabar"
+            id="boton-grabar">Grabar</button>
+  </div>
+</form>
+{% endblock %}
