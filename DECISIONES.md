@@ -26,7 +26,7 @@ Hay que declararlas en el informe (sección 1) y en el README, y el grupo las co
 
 | Tema | Decisión | Por qué |
 |---|---|---|
-| Quién ingresa, modifica y elimina | Solo el perfil corredor, y solo lo de su corredora. Analista y administrador consultan todo en solo lectura | Es la tabla de roles del informe de diseño (4.5.1). Se revisa en el servidor, no solo en pantalla. |
+| Quién ingresa, modifica y elimina | El corredor, solo en su corredora, y el administrador, en cualquier corredora. El analista solo consulta. Lo oficial de Bolsa no lo modifica nadie | Se revisa en el servidor (`requiere_perfil`, `puede_editar`), no solo en pantalla, y el trigger de la base lo respalda. |
 | Acceso entre corredoras | Pedir por URL un registro de otra corredora responde 404, sin entregar datos | El corredor no debe saber siquiera si el registro existe. |
 | Datos oficiales de Bolsa | El corredor los ve en su mantenedor, bloqueados. Si ingresa la misma llave, se muestra la suya ("Predomina sobre Bolsa") | Reglas del HDU: lo del corredor es local y predomina sobre lo de Bolsa. |
 | Calcular, Grabar y Cancelar | Calcular muestra los factores y no guarda nada. Los factores 8 a 33 se pueden editar antes de Grabar; lo que se guarda es lo editado | Historias 3 y 4 del HDU. |
@@ -42,3 +42,16 @@ Hay que declararlas en el informe (sección 1) y en el README, y el grupo las co
 | Formato de números | Montos con punto de miles y factores con coma decimal | Formato chileno. Los factores aceptan coma o punto al escribirlos. |
 
 Cómo instalar, ejecutar y probar: ver `README.md`.
+
+
+## Carga masiva (CSV) y registro de operaciones
+
+| Tema | Decisión | Dónde está |
+|---|---|---|
+| Quién carga | Solo el corredor, en su corredora | `app.py`: `cargar_csv` (`solo_corredor`) |
+| Formato | Hoja 3.1 del HDU: ejercicio, mercado, instrumento, fecha, secuencia, numero_dividendo, tipo_sociedad, valor_historico y factor_8 a factor_37. Coma o punto y coma, UTF-8, máximo 5.000 filas y 4 MB | `carga_csv.py` |
+| Filas inválidas | Se rechaza el archivo completo y no se guarda nada; la carga rechazada queda en `carga_archivo` con su motivo | `app.py`: `registrar_rechazo` |
+| Llave y actualización | Si la llave (corredora, ejercicio, mercado, instrumento, secuencia) existe se actualiza; si no, se agrega. Al actualizar con factores se borran los montos anteriores | `app.py`: `aplicar_carga` |
+| Transacción | Toda la carga se guarda en una sola transacción: o entra completa o no entra | `app.py`: `aplicar_carga` |
+| Log | Una entrada `carga_masiva` por archivo, con agregadas y actualizadas, y origen `carga_masiva` | `app.py`: `insertar_log` |
+| Quién lee el log | Analista y administrador, en solo lectura | `app.py`: `ver_log`, `templates/log.html` |

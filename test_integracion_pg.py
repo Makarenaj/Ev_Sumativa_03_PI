@@ -14,11 +14,14 @@ Sin la variable DATABASE_URL_TEST estas pruebas se omiten.
 """
 import os
 from pathlib import Path
+import io
 import re
+import time
 
 import psycopg
 import pytest
 
+import carga_csv
 from app import create_app
 from seguridad import MAX_INTENTOS_FALLIDOS, hash_clave
 
@@ -274,9 +277,8 @@ def test_la_calificacion_del_corredor_predomina_sobre_la_de_bolsa(app):
     assert "Predomina" not in otra and "Oficial" in otra    # el otro corredor sigue viendo la oficial
 
 
-@pytest.mark.parametrize("correo", ["analista@nuam.cl", "admin@nuam.cl"])
-def test_analista_y_administrador_son_de_solo_lectura(app, correo):
-    cliente, token, _ = entrar(app, correo)
+def test_analista_es_de_solo_lectura(app):
+    cliente, token, _ = entrar(app, "analista@nuam.cl")
     grilla = cliente.get("/calificaciones").text
     assert "Copec" in grilla and "Oficial Bolsa" in grilla    # consultan todas las corredoras
     id_copec = consultar("SELECT id_calificacion FROM calificacion WHERE instrumento = 'Copec'")[0][0]
@@ -332,3 +334,190 @@ def test_el_log_no_se_puede_editar_ni_borrar(app):
     for sql in ("UPDATE log_operacion SET accion = 'crear'", "DELETE FROM log_operacion"):
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             consultar(sql + " RETURNING 1")
+
+
+
+# ---------------------------------------------------------------- administrador
+def id_corredora(nombre):
+    return consultar("SELECT id_corredora FROM corredora WHERE nombre = %s", (nombre,))[0][0]
+
+
+def test_administrador_crea_modifica_y_elimina_en_cualquier_corredora(app):
+    cliente, token, _ = entrar(app, "admin@nuam.cl")
+    pantalla = cliente.get("/calificaciones/nueva")
+    assert pantalla.status_code == 200 and 'name="id_corredora"' in pantalla.text
+    destino = id_corredora("Corredora Dos")
+    formulario = calcular(cliente, datos(token, 40001, instrumento="Creada por admin", id_corredora=str(destino)))
+    assert grabar(cliente, formulario).status_code == 302
+    id_nueva = id_de(40001)
+    assert consultar("SELECT id_corredora, origen FROM calificacion WHERE id_calificacion = %s", (id_nueva,)) == [(destino, "manual")]
+    # modificar: cambia el monto de la columna 9 y vuelve a calcular
+    ruta = f"/calificaciones/{id_nueva}/editar"
+    nuevos = {**MONTOS_HDU, 9: "100000000"}
+    editado = calcular(cliente, datos(token, 40001, montos=nuevos, instrumento="Creada por admin"), ruta=ruta)
+    assert grabar(cliente, editado, ruta=ruta).status_code == 302
+    (factor_9,), = consultar("SELECT valor FROM factor_calificacion WHERE id_calificacion = %s AND numero_factor = 9", (id_nueva,))
+    assert str(factor_9) != FACTORES_HDU[9]
+    assert consultar("SELECT 1 FROM log_operacion WHERE accion = 'modificar' AND id_registro = %s", (id_nueva,))
+    # eliminar con confirmacion
+    assert cliente.get(f"/calificaciones/{id_nueva}/eliminar").status_code == 200
+    assert cliente.post(f"/calificaciones/{id_nueva}/eliminar", data={"csrf_token": token}).status_code == 302
+    assert not consultar("SELECT 1 FROM calificacion WHERE id_calificacion = %s", (id_nueva,))
+    acciones = [a for (a,) in consultar("SELECT accion FROM log_operacion WHERE id_registro = %s ORDER BY id_log", (id_nueva,))]
+    assert acciones == ["crear", "modificar", "eliminar"]
+    (usuario_log,), = consultar("SELECT u.rol FROM log_operacion l JOIN usuario u USING (id_usuario) WHERE l.id_registro = %s LIMIT 1", (id_nueva,))
+    assert usuario_log == "administrador"
+
+
+def test_administrador_no_ingresa_en_la_bolsa_ni_sin_corredora(app):
+    cliente, token, _ = entrar(app, "admin@nuam.cl")
+    antes = consultar("SELECT count(*) FROM calificacion")[0][0]
+    en_bolsa = calcular(cliente, datos(token, 40002, id_corredora=str(id_corredora("Bolsa"))))
+    assert grabar(cliente, en_bolsa).status_code == 400
+    sin_corredora = calcular(cliente, datos(token, 40003))
+    assert grabar(cliente, sin_corredora).status_code == 400
+    assert consultar("SELECT count(*) FROM calificacion")[0][0] == antes
+
+
+def test_administrador_no_modifica_ni_elimina_lo_oficial(app):
+    cliente, token, _ = entrar(app, "admin@nuam.cl")
+    oficial = app.id_oficial
+    assert not cliente.get(f"/calificaciones/{oficial}").text.count("Eliminar")
+    assert cliente.post(f"/calificaciones/{oficial}/eliminar", data={"csrf_token": token}).status_code == 302
+    assert cliente.post(f"/calificaciones/{oficial}/editar", data={"csrf_token": token}).status_code in (302, 400)
+    assert consultar("SELECT instrumento FROM calificacion WHERE id_calificacion = %s", (oficial,)) == [("Oficial Bolsa",)]
+
+
+# ---------------------------------------------------------------- registro de operaciones (log)
+def test_log_lo_consultan_analista_y_administrador_y_no_el_corredor(app):
+    assert entrar(app, "corredor1@demo.cl")[0].get("/log").status_code == 403
+    for correo in ("analista@nuam.cl", "admin@nuam.cl"):
+        pagina = entrar(app, correo)[0].get("/log")
+        assert pagina.status_code == 200 and "Registro de operaciones" in pagina.text
+    cliente, token, _ = entrar(app, "admin@nuam.cl")
+    assert "crear" in cliente.get("/log").text      # aparecen las operaciones hechas arriba
+    assert cliente.post("/log", data={"csrf_token": token}).status_code == 405   # solo se consulta
+
+
+def test_menu_segun_el_perfil(app):
+    corredor = entrar(app, "corredor1@demo.cl")[0].get("/calificaciones").text
+    assert "Carga masiva (CSV)" in corredor and "Registro de operaciones" not in corredor
+    for correo in ("analista@nuam.cl", "admin@nuam.cl"):
+        pagina = entrar(app, correo)[0].get("/calificaciones").text
+        assert "Registro de operaciones" in pagina and "Carga masiva (CSV)" not in pagina
+
+
+# ---------------------------------------------------------------- carga masiva CSV
+RUTA_CSV = "/calificaciones/cargar-csv"
+
+
+def fila_csv(instrumento, secuencia, f8="0.5", f9="0.5", fecha="2024-06-30", extra=None):
+    valores = {"ejercicio": "2024", "mercado": "ACN", "instrumento": instrumento, "fecha": fecha,
+               "secuencia": str(secuencia), "tipo_sociedad": "A", "factor_8": f8, "factor_9": f9}
+    valores.update(extra or {})
+    return [valores.get(columna, "") for columna in carga_csv.CABECERA]
+
+
+def texto_csv(filas, delimitador=","):
+    salida = io.StringIO(newline="")
+    escritor = __import__("csv").writer(salida, delimiter=delimitador, lineterminator="\n")
+    escritor.writerow(carga_csv.CABECERA)
+    escritor.writerows(filas)
+    return salida.getvalue()
+
+
+def subir(cliente, token, texto, nombre="carga.csv"):
+    return cliente.post(RUTA_CSV, data={"csrf_token": token, "accion": "previsualizar",
+                                        "archivo_csv": (io.BytesIO(texto.encode("utf-8")), nombre)})
+
+
+def confirmar(cliente, token, texto, nombre="carga.csv"):
+    return cliente.post(RUTA_CSV, data={"csrf_token": token, "accion": "confirmar",
+                                        "nombre_archivo": nombre, "contenido_csv": texto})
+
+
+def test_csv_valido_se_previsualiza_y_al_confirmar_agrega_y_actualiza(app):
+    cliente, token, _ = entrar(app, "corredor1@demo.cl")
+    texto = carga_csv.ejemplo_csv()          # Copec ya existe en la corredora; Cencosud y Falabella son nuevas
+    vista = subir(cliente, token, texto)
+    assert vista.status_code == 200 and "Confirmar carga" in vista.text
+    assert "Actualiza" in vista.text and "Agrega" in vista.text
+    assert not consultar("SELECT 1 FROM calificacion WHERE instrumento = 'Cencosud'"), "la previsualizacion no guarda nada"
+    assert confirmar(cliente, token, texto, "ejemplo.csv").status_code == 302
+    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento IN ('Cencosud', 'Falabella') AND origen = 'carga_masiva'")) == 2
+    (origen,), = consultar("SELECT origen FROM calificacion WHERE instrumento = 'Copec' AND id_corredora = %s", (id_corredora("Corredora Demo"),))
+    assert origen == "carga_masiva"                                         # se actualizo, no se duplico
+    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento = 'Copec' AND id_corredora = %s", (id_corredora("Corredora Demo"),))) == 1
+    (factor_8,), = consultar("""SELECT f.valor FROM factor_calificacion f JOIN calificacion c USING (id_calificacion)
+                                WHERE c.instrumento = 'Copec' AND f.numero_factor = 8""")
+    assert str(factor_8) == FACTORES_HDU[8]
+    assert consultar("SELECT estado, total_filas, filas_invalidas FROM carga_archivo WHERE nombre_archivo = 'ejemplo.csv'") == [("confirmado", 3, 0)]
+    (despues,), = consultar("SELECT datos_despues FROM log_operacion WHERE accion = 'carga_masiva' ORDER BY id_log DESC LIMIT 1")
+    assert despues["agregadas"] == 2 and despues["actualizadas"] == 1
+
+
+def test_csv_con_una_fila_invalida_se_rechaza_completo(app):
+    cliente, token, _ = entrar(app, "corredor1@demo.cl")
+    texto = texto_csv([fila_csv("RechazoA", 41001), fila_csv("RechazoB", 41002, f8="0.7", f9="0.5"), fila_csv("RechazoC", 41003)])
+    respuesta = subir(cliente, token, texto, "con_error.csv")
+    assert respuesta.status_code == 400 and "rechazó completo" in respuesta.text and "supera 1" in respuesta.text
+    assert "Fila del archivo" in respuesta.text and ">3<" in respuesta.text.replace(" ", "")     # indica la fila con el error
+    assert confirmar(cliente, token, texto, "con_error.csv").status_code == 400       # tampoco se puede forzar al confirmar
+    assert not consultar("SELECT 1 FROM calificacion WHERE instrumento ~ '^Rechazo'")
+    estado, invalidas, detalle = consultar("SELECT estado, filas_invalidas, detalle_error FROM carga_archivo WHERE nombre_archivo = 'con_error.csv' ORDER BY id_carga LIMIT 1")[0]
+    assert estado == "rechazado" and invalidas == 1 and "supera 1" in detalle
+    # una vez corregido, el mismo archivo se acepta
+    corregido = texto_csv([fila_csv("RechazoA", 41001), fila_csv("RechazoB", 41002), fila_csv("RechazoC", 41003)])
+    assert subir(cliente, token, corregido, "corregido.csv").status_code == 200
+    assert confirmar(cliente, token, corregido, "corregido.csv").status_code == 302
+    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento ~ '^Rechazo'")) == 3
+
+
+def test_csv_con_formato_incorrecto(app):
+    cliente, token, _ = entrar(app, "corredor1@demo.cl")
+    assert subir(cliente, token, "a,b\n1,2", "datos.txt").status_code == 400                    # no es .csv
+    respuesta = subir(cliente, token, "ejercicio,mercado\n2024,ACN", "corto.csv")
+    assert respuesta.status_code == 400 and "Formato incorrecto" in respuesta.text
+    assert subir(cliente, token, "", "vacio.csv").status_code == 400
+    assert cliente.post(RUTA_CSV, data={"csrf_token": token, "accion": "otra"}).status_code == 400
+
+
+def test_csv_punto_y_coma_con_decimal_coma(app):
+    cliente, token, _ = entrar(app, "corredor1@demo.cl")
+    texto = texto_csv([fila_csv("ComaDecimal", 42001, f8="0,25", f9="0,75")], delimitador=";")
+    assert confirmar(cliente, token, texto).status_code == 302
+    (factor,), = consultar("SELECT f.valor FROM factor_calificacion f JOIN calificacion c USING (id_calificacion) WHERE c.instrumento = 'ComaDecimal' AND f.numero_factor = 8")
+    assert str(factor) == "0.25000000"
+
+
+def test_csv_es_local_de_cada_corredora(app):
+    cliente, token, _ = entrar(app, "corredor2@demo.cl")
+    texto = texto_csv([fila_csv("Copec", 123123, extra={"ejercicio": "2023", "fecha": "2023-12-12"})])
+    assert "Agrega" in subir(cliente, token, texto).text          # para la otra corredora es una calificacion nueva
+    assert confirmar(cliente, token, texto).status_code == 302
+    assert len(consultar("SELECT 1 FROM calificacion WHERE instrumento = 'Copec' AND secuencia = 123123")) == 2
+
+
+def test_csv_solo_lo_carga_el_corredor(app):
+    for correo in ("analista@nuam.cl", "admin@nuam.cl"):
+        cliente, token, _ = entrar(app, correo)
+        assert cliente.get(RUTA_CSV).status_code == 403
+        assert subir(cliente, token, carga_csv.ejemplo_csv()).status_code == 403
+    assert entrar(app, "corredor1@demo.cl")[0].get(RUTA_CSV).status_code == 200
+    assert entrar(app, "corredor1@demo.cl")[0].get(RUTA_CSV + "/ejemplo").status_code == 200
+
+
+def test_csv_sin_token_csrf_se_rechaza(app):
+    cliente, _, _ = entrar(app, "corredor1@demo.cl")
+    respuesta = cliente.post(RUTA_CSV, data={"accion": "confirmar", "contenido_csv": carga_csv.ejemplo_csv()})
+    assert respuesta.status_code in (400, 403)
+
+
+def test_csv_de_1000_filas_se_procesa_en_menos_de_10_segundos(app):
+    cliente, token, _ = entrar(app, "corredor1@demo.cl")
+    texto = texto_csv([fila_csv(f"Estres{n:04d}", 100000 + n) for n in range(1000)])
+    inicio = time.perf_counter()
+    assert subir(cliente, token, texto, "estres.csv").status_code == 200
+    assert confirmar(cliente, token, texto, "estres.csv").status_code == 302
+    assert time.perf_counter() - inicio < 10
+    assert consultar("SELECT count(*) FROM calificacion WHERE instrumento ~ '^Estres'")[0][0] == 1000

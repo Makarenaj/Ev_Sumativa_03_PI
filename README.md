@@ -8,7 +8,7 @@ Tecnología: Python 3 con Flask, PostgreSQL 16, HTML, CSS y JavaScript sin frame
 
 ## Instalar y ejecutar
 
-Requiere Python 3.10 o superior y PostgreSQL 16. Los comandos se ejecutan en la
+Requiere Python 3.10 o superior y PostgreSQL 16 (probado también en la 18). Los comandos se ejecutan en la
 carpeta del proyecto.
 
 1. Crea la base y las tablas:
@@ -45,8 +45,9 @@ carpeta del proyecto.
    ```
    python crear_admin.py
    ```
-6. Crea un corredor. El ingreso, la modificación y la eliminación son exclusivos
-   del perfil corredor, así que sin este paso no se puede mostrar el flujo.
+6. Crea un corredor. El corredor es el único perfil que puede cargar archivos CSV
+   y es el que recorre el flujo ideal; el administrador también ingresa, modifica
+   y elimina calificaciones, pero eligiendo la corredora.
    Primero mira el ID de la corredora:
    ```
    psql -U postgres -d calificaciones -c "SELECT id_corredora, nombre FROM corredora"
@@ -83,14 +84,21 @@ variables de entorno, nunca en el código.
    pantalla. Si supera 1, no se graba.
 6. Presiona Grabar. La calificación aparece en el mantenedor con fuente "Manual".
 7. Usa Ver, Modificar y Eliminar. Cada operación deja una fila en `log_operacion`.
+8. Entra a "Carga masiva (CSV)" y sube `ejemplos/carga_valida.csv` (o descárgalo con
+   el enlace de la pantalla). La previsualización indica cada fila y si se agrega o
+   se actualiza; al confirmar se guardan. Con `ejemplos/carga_con_error.csv` el
+   archivo se rechaza completo, indicando la fila y el motivo, y no se guarda nada.
+9. Entra como administrador: puede modificar una calificación de cualquier corredora
+   y, en "Registro de operaciones", ve quién hizo cada operación, cuándo y con qué
+   origen. El analista también consulta el registro, pero no modifica nada.
 
 ## Perfiles y permisos
 
-| Perfil | Calificaciones de su corredora | Otras corredoras | Datos oficiales de Bolsa |
-|---|---|---|---|
-| Corredor | Consulta, ingresa, modifica y elimina | Sin acceso (responde 404) | Solo lectura |
-| Analista | No ingresa ni modifica | Consulta todas | Solo lectura |
-| Administrador | No ingresa ni modifica | Consulta todas | Solo lectura |
+| Perfil | Calificaciones de su corredora | Otras corredoras | Carga CSV | Registro de operaciones | Datos oficiales de Bolsa |
+|---|---|---|---|---|---|
+| Corredor | Consulta, ingresa, modifica y elimina | Sin acceso (responde 404) | Sí | Sin acceso (403) | Solo lectura |
+| Analista | No ingresa ni modifica | Consulta todas | No (403) | Consulta | Solo lectura |
+| Administrador | Ingresa, modifica y elimina en cualquier corredora | Ingresa, modifica y elimina | No (403) | Consulta | Solo lectura |
 
 Si el corredor ingresa una calificación con la misma llave que una oficial de
 Bolsa, en su mantenedor se muestra la suya ("Predomina sobre Bolsa").
@@ -102,7 +110,8 @@ Bolsa, en su mantenedor se muestra la suya ("Predomina sobre Bolsa").
 | Hash de claves (PBKDF2-SHA256 con sal, 600.000 iteraciones) | `seguridad.py`: `hash_clave`, `verificar_clave` |
 | Consultas parametrizadas en todo el acceso a datos | `app.py` y `seguridad.py` (parámetros `%s`) |
 | Validación de entradas en el servidor (tipo, largo, formato, rango) | `app.py`: `leer_campos`, `leer_montos`, `leer_factores`; `calculo.py`: `validar_factores` |
-| Acceso por perfil y por corredora, revisado en el servidor | `app.py`: `requiere_login`, `solo_corredor`, `consultar_registro` |
+| Acceso por perfil y por corredora, revisado en el servidor | `app.py`: `requiere_login`, `requiere_perfil` (`solo_corredor`, `puede_modificar`), `puede_editar`, `consultar_registro` |
+| Validación del archivo CSV (extensión, UTF-8, tamaño, columnas y cada fila) y carga en una sola transacción | `carga_csv.py`: `leer_csv`, `validar_fila_csv`; `app.py`: `cargar_csv`, `aplicar_carga` |
 | Token CSRF en todos los formularios | `app.py`: `proteger_post` |
 | Bloqueo de la cuenta tras 5 intentos fallidos, por 15 minutos | `seguridad.py`: `autenticar` |
 | Cierre de sesión por inactividad y cookie HttpOnly y SameSite | `app.py`: `usuario_actual`, `create_app` |
@@ -133,10 +142,10 @@ Los colores están como variables en `static/app.css`.
 python -m pytest -q
 ```
 
-Sin configuración adicional corren 39 pruebas: 13 del cálculo, 9 de seguridad y
-17 de las rutas web con una conexión simulada.
+Sin configuración adicional corren 72 pruebas: 13 del cálculo, 33 del CSV, 9 de
+seguridad y 17 de las rutas web con una conexión simulada.
 
-Las 26 pruebas de integración usan PostgreSQL real y recorren el flujo ideal y
+Las 38 pruebas de integración usan PostgreSQL real y recorren el flujo ideal y
 los casos de error, de borde y de seguridad. La base de pruebas se borra y se
 vuelve a crear en cada corrida, por eso su nombre debe terminar en `_test`:
 
@@ -145,5 +154,47 @@ psql -U postgres -c "CREATE DATABASE calificaciones_test"
 $env:DATABASE_URL_TEST = "postgresql://postgres:TU_CLAVE@localhost:5432/calificaciones_test"
 python -m pytest -v test_integracion_pg.py
 ```
+
+## Consultas manuales a la base de datos
+
+Sirven para extraer y comprobar los datos sin pasar por la aplicación (solo lectura).
+Todas están en `consultas_manuales.sql`: corredoras y usuarios (sin la clave),
+calificaciones con su fuente y la suma de montos y de factores 8 a 19, montos y
+factores de una calificación, calificaciones con suma mayor que 1 (debe salir
+vacío), registro de operaciones, cargas de CSV y conteo por corredora.
+
+Todo el archivo (PowerShell o CMD, en la carpeta del proyecto):
+```
+psql -U postgres -d calificaciones -f consultas_manuales.sql
+```
+
+Una consulta suelta, por ejemplo los factores de la calificación 1:
+```
+psql -U postgres -d calificaciones -c "SELECT numero_factor, valor FROM factor_calificacion WHERE id_calificacion = 1 ORDER BY numero_factor"
+```
+
+Exportar a CSV (por ejemplo, todos los factores):
+```
+psql -U postgres -d calificaciones -c "\copy (SELECT k.instrumento, k.secuencia, f.numero_factor, f.valor FROM calificacion k JOIN factor_calificacion f USING (id_calificacion) ORDER BY k.id_calificacion, f.numero_factor) TO 'factores.csv' CSV HEADER"
+```
+
+Con el ejemplo del HDU cargado (`seed_ejemplo_hdu.sql`) la consulta 2 debe mostrar
+suma de montos 368745318.00 y suma de factores 1.00000000.
+Si `psql` no se reconoce en Windows, usa la ruta completa
+(`"C:\Program Files\PostgreSQL\18\bin\psql.exe"`) o agrégalo al PATH con
+`set PATH=%PATH%;C:\Program Files\PostgreSQL\18\bin`.
+
+## Decisiones del caso
+
+- Rango de la suma de factores: 8 al 19 (cada factor es su monto dividido por la suma de las columnas 8 a 19).
+- Filas inválidas en un CSV: se rechaza todo el archivo hasta que esté completamente válido; no se guarda ninguna fila.
+- Llave que identifica una calificación: corredora, ejercicio, mercado, instrumento y secuencia. En la carga masiva, si la llave existe se actualiza y si no se agrega.
+- Factores 34 a 37: no se calculan (el HDU no define su regla); solo se guardan si vienen en el CSV.
+- Administrador: ingresa, modifica y elimina calificaciones de cualquier corredora; los datos oficiales de Bolsa quedan bloqueados para todos.
+
+## Problemas frecuentes
+
+- `connection refused`: PostgreSQL no está corriendo o `DATABASE_URL` tiene otra clave o puerto.
+- La pantalla de carga CSV rechaza el archivo: revisa que sea UTF-8, que tenga las 38 columnas de `ejemplos/carga_valida.csv` y que la suma de los factores 8 a 19 no supere 1. El mensaje indica la fila del archivo (la 1 es el encabezado).
 
 Más decisiones de base de datos, cálculo y seguridad: [DECISIONES.md](./DECISIONES.md).
