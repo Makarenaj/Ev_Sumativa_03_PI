@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Registro de operaciones | Mantenedor{% endblock %}
+{% block ruta %}Registro de operaciones{% endblock %}
+{% block page_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='calificaciones.css') }}">
+{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <h1>Registro de operaciones</h1>
+    <p class="muted">
+      Quién hizo cada operación, qué cambió, cuándo y con qué origen. Es de solo lectura:
+      nadie puede editarlo ni eliminarlo. Se muestran las últimas 200 operaciones.
+    </p>
+  </div>
+  <a class="button button-quiet" href="{{ url_for('calificaciones') }}">Volver al mantenedor</a>
+</section>
+
+<section class="panel">
+  {% if logs %}
+  <div class="table-scroll">
+    <table class="tabla-tarjetas">
+      <thead>
+        <tr><th>Fecha y hora</th><th>Usuario</th><th>Acción</th><th>Tabla / id</th><th>Origen</th><th>Detalle</th></tr>
+      </thead>
+      <tbody>
+      {% for log in logs %}
+        <tr>
+          <td data-label="Fecha y hora">{{ log.fecha_hora|fecha_hora }}</td>
+          <td data-label="Usuario">{{ log.correo or "—" }}</td>
+          <td data-label="Acción"><strong>{{ log.accion }}</strong></td>
+          <td data-label="Tabla / id">{{ log.tabla }} #{{ log.id_registro }}</td>
+          <td data-label="Origen">{{ origenes.get(log.origen, log.origen) }}</td>
+          <td data-label="Detalle">
+            {% if log.datos_antes or log.datos_despues %}
+            <details>
+              <summary>Ver datos</summary>
+              {% if log.datos_antes %}<p class="subline">Antes</p><pre>{{ log.datos_antes|tojson(indent=1) }}</pre>{% endif %}
+              {% if log.datos_despues %}<p class="subline">Después</p><pre>{{ log.datos_despues|tojson(indent=1) }}</pre>{% endif %}
+            </details>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h3>Aún no hay operaciones</h3>
+    <p class="muted">Cuando un usuario ingrese, modifique, elimine o cargue calificaciones, aparecerá aquí.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
