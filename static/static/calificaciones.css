@@ -1,0 +1,27 @@
+.search-form { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+.search-field { flex: 1 1 260px; }
+.search-form .field { min-width: 140px; }
+.table-panel { padding: 0; }
+.table-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 16px 20px 4px; }
+.table-heading h2 { margin: 0; }
+.result-count { font-size: 13px; font-style: italic; }
+.empty-state { padding: 36px 20px; text-align: center; }
+.celda .badge { margin-top: 3px; }
+
+/* Celular: cada calificación se muestra como una tarjeta, sin desborde horizontal */
+@media (max-width: 760px) {
+  .search-form .field, .search-field { flex: 1 1 100%; }
+  .search-form .button { flex: 1; }
+  .tabla-tarjetas thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .tabla-tarjetas, .tabla-tarjetas tbody, .tabla-tarjetas tr, .tabla-tarjetas td { display: block; width: 100%; }
+  .tabla-tarjetas tr { padding: 10px 14px; border-top: 1px solid var(--color-texto); }
+  .tabla-tarjetas td { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; text-align: right; }
+  .tabla-tarjetas td::before { content: attr(data-label); flex: none; max-width: 62%; font-weight: 700; text-align: left; }
+  .tabla-tarjetas td:first-child { display: block; text-align: left; font-size: 17px; }
+  .tabla-tarjetas td:first-child::before, .tabla-tarjetas td:last-child::before { content: none; }
+  .tabla-tarjetas td:last-child { display: block; padding-top: 8px; }
+  /* valor a la derecha; etiquetas y texto de apoyo debajo del valor */
+  .tabla-tarjetas .celda { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; }
+  .tabla-tarjetas .subline { margin: 0; }
+  .tabla-tarjetas td:first-child .subline { display: block; margin-left: 0; }
+}

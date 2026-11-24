@@ -1,0 +1,2 @@
+.error-panel { width: min(100%, 620px); margin: 32px auto; }
+.error-panel .form-actions { margin: 20px 0 0; justify-content: flex-start; }
